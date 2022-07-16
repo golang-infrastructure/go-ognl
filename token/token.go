@@ -39,6 +39,8 @@ const (
 	PERIOD // .
 	LBRACK // [
 	RBRACK // ]
+	First
+	Last
 	keyword_end
 )
 
@@ -49,6 +51,8 @@ var tokens = [...]string{
 	STRING: "string",
 	INT:    "int",
 	Len:    "len",
+	First:  "first",
+	Last:   "last",
 }
 
 // keywords 关键字

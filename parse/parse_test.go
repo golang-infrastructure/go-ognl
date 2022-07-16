@@ -11,7 +11,7 @@ type Mock struct {
 	Hash1 map[string]interface{}
 	Hash2 map[int]interface{}
 	List  []*Mock
-	Array [10]*Mock
+	Array [3]*Mock
 }
 
 func TestParse(t *testing.T) {
@@ -42,7 +42,7 @@ func TestParse(t *testing.T) {
 			4: t4,
 		},
 		List:  []*Mock{t2, t3, t4},
-		Array: [10]*Mock{t2, t3, t4},
+		Array: [3]*Mock{t2, t3, t4},
 	}
 	test := []struct {
 		query string
@@ -58,6 +58,8 @@ func TestParse(t *testing.T) {
 		{".List[0].Name", "t2"},
 		{".Array[0].Name", "t2"},
 		{".hash2 [0]", nil},
+		{".List first.Name", "t2"},
+		{".List last.Name", "t4"},
 	}
 	for index, v := range test {
 		vv, err := Parse(v.query, t1)

@@ -41,6 +41,14 @@ func parse(tokens []*token.Token, obj interface{}) (interface{}, error) {
 	case token.INT:
 		i, _ := strconv.Atoi(tokens[0].Value)
 		obj, err = parseInt(t, v, i)
+	case token.First:
+		obj, err = parseInt(t, v, 0)
+	case token.Last:
+		l, err := parseLen(t, v)
+		if err != nil {
+			return nil, err
+		}
+		obj, err = parseInt(t, v, l.(int)-1)
 	case token.Len:
 		return parseLen(t, v)
 	default:
@@ -123,11 +131,11 @@ func parseLen(t reflect.Type, v reflect.Value) (interface{}, error) {
 	switch v.Kind() {
 	case reflect.Ptr, reflect.Interface:
 		if v.IsNil() {
-			return nil, nil
+			return 0, nil
 		}
 
 		if !v.Elem().IsValid() {
-			return nil, nil
+			return 0, nil
 		}
 		return parseLen(t, v.Elem())
 	case reflect.Slice, reflect.Array, reflect.Map:
@@ -135,6 +143,6 @@ func parseLen(t reflect.Type, v reflect.Value) (interface{}, error) {
 	case reflect.Struct:
 		return v.NumField(), nil
 	default:
-		return nil, ErrParseLen
+		return 0, ErrParseLen
 	}
 }

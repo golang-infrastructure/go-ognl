@@ -9,10 +9,10 @@ var (
 	ErrLength          = errors.New("invalid length")
 	ErrFirstIdentifier = errors.New("first identifier must be '.' or '['")
 	ErrLastIdentifier  = errors.New("last identifier must be ']' or 'string' or 'len' or 'int'")
-	ErrPeriodBack      = errors.New("'.' must be behind 'string' or 'len' or 'int'")
-	ErrStringBack      = errors.New("'string' must be behind '.' or '[' or 'int")
+	ErrPeriodBack      = errors.New("'.' must be behind 'string' or 'len' or 'int' or 'first' or 'last'")
+	ErrStringBack      = errors.New("'string' must be behind '.' or '[' or 'int" + " or 'last' or 'first'")
 	ErrIntBack         = errors.New("'int' must be behind ']' or '.'")
-	ErrLBrackBack      = errors.New("'[' must be behind 'int'")
+	ErrLBrackBack      = errors.New("'[' must be behind 'int' or 'last' or 'first'")
 	ErrRBrackBack      = errors.New("']' must be behind '.' or '[' or 'len'")
 	ErrLenBack         = errors.New("'len' must be behind 'EOF'")
 )
@@ -34,20 +34,20 @@ func ParseToken(tokens []*token.Token) ([]*token.Token, error) {
 	for i := 0; i < ln; i++ {
 		switch tokens[i].Type {
 		case token.PERIOD:
-			if i+1 >= ln || (tokens[i+1].Type != token.STRING && tokens[i+1].Type != token.Len && tokens[i+1].Type != token.INT) {
+			if i+1 >= ln || (tokens[i+1].Type != token.STRING && tokens[i+1].Type != token.Len && tokens[i+1].Type != token.INT && tokens[i+1].Type != token.First && tokens[i+1].Type != token.Last) {
 				return nil, ErrPeriodBack
 			}
 			continue
 		case token.STRING:
-			if i+1 < ln && (tokens[i+1].Type != token.PERIOD && tokens[i+1].Type != token.LBRACK && tokens[i+1].Type != token.INT) {
+			if i+1 < ln && (tokens[i+1].Type != token.PERIOD && tokens[i+1].Type != token.LBRACK && tokens[i+1].Type != token.INT && tokens[i+1].Type != token.First && tokens[i+1].Type != token.Last) {
 				return nil, ErrStringBack
 			}
-		case token.INT:
+		case token.INT, token.Last, token.First:
 			if i+1 < ln && (tokens[i+1].Type != token.RBRACK && tokens[i+1].Type != token.PERIOD) {
 				return nil, ErrIntBack
 			}
 		case token.LBRACK:
-			if i+1 >= ln || (tokens[i+1].Type != token.INT) {
+			if i+1 >= ln || (tokens[i+1].Type != token.INT && tokens[i+1].Type != token.Last && tokens[i+1].Type != token.First) {
 				return nil, ErrLBrackBack
 			}
 			continue
