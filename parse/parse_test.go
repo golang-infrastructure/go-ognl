@@ -15,35 +15,39 @@ type Mock struct {
 }
 
 func TestParse(t *testing.T) {
+	var (
+		t2 = &Mock{
+			Name: "t2",
+			Age:  2,
+		}
+		t3 = &Mock{
+			Name: "t3",
+			Age:  3,
+		}
+		t4 = &Mock{
+			Name:  "t4",
+			Age:   4,
+			Hash1: map[string]interface{}{},
+		}
+		t1 = &Mock{
+			Name: "t1",
+			Age:  1,
+			Hash1: map[string]interface{}{
+				"string1": "string",
+				"int1":    1,
+				"t2":      t2,
+			},
+			Hash2: map[int]interface{}{
+				2: t2,
+				3: t3,
+				4: t4,
+			},
+			List:  []*Mock{t2, t3, t4},
+			Array: [3]*Mock{t2, t3, t4},
+		}
+	)
+	t1.Hash1["t1"] = t1
 
-	t2 := &Mock{
-		Name: "t2",
-		Age:  2,
-	}
-	t3 := &Mock{
-		Name: "t3",
-		Age:  3,
-	}
-	t4 := &Mock{
-		Name: "t4",
-		Age:  4,
-	}
-	t1 := &Mock{
-		Name: "t1",
-		Age:  1,
-		Hash1: map[string]interface{}{
-			"string1": "string",
-			"int1":    1,
-			"t2":      t2,
-		},
-		Hash2: map[int]interface{}{
-			2: t2,
-			3: t3,
-			4: t4,
-		},
-		List:  []*Mock{t2, t3, t4},
-		Array: [3]*Mock{t2, t3, t4},
-	}
 	test := []struct {
 		query string
 		value interface{}
@@ -60,6 +64,8 @@ func TestParse(t *testing.T) {
 		{".hash2 [0]", nil},
 		{".List first.Name", "t2"},
 		{".List last.Name", "t4"},
+
+		{".Hash1.t1.Hash1.t1.Hash1.t1.Name", "t1"},
 	}
 	for index, v := range test {
 		vv, err := Parse(v.query, t1)
