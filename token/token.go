@@ -1,6 +1,8 @@
 package token
 
-import "strconv"
+import (
+	"strconv"
+)
 
 type Token struct {
 	Type  Type
@@ -54,7 +56,6 @@ var keywords map[string]Type
 
 func init() {
 	// 预处理,将关键字存入keywords map
-
 	keywords = make(map[string]Type)
 	for i := keyword_beg + 1; i < keyword_end; i++ {
 		keywords[tokens[i]] = i

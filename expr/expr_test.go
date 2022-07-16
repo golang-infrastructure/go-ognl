@@ -39,7 +39,7 @@ func Test_parseToken(t *testing.T) {
 		{".len", nil},
 	}
 	for index, v := range test {
-		_, err := parseToken(lexer.NewLexer(v.V).GetToken())
+		_, err := ParseToken(lexer.NewLexer(v.V).GetToken())
 		if !errors.Is(err, v.Err) {
 			t.Fatalf("index=%d expected=%q, got=%q", index, err, v.Err)
 		}

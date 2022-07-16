@@ -17,7 +17,7 @@ var (
 	ErrLenBack         = errors.New("'len' must be behind 'EOF'")
 )
 
-func parseToken(tokens []*token.Token) ([]*token.Token, error) {
+func ParseToken(tokens []*token.Token) ([]*token.Token, error) {
 	ln := len(tokens)
 	if ln == 0 {
 		return nil, ErrLength
@@ -37,6 +37,7 @@ func parseToken(tokens []*token.Token) ([]*token.Token, error) {
 			if i+1 >= ln || (tokens[i+1].Type != token.STRING && tokens[i+1].Type != token.Len && tokens[i+1].Type != token.INT) {
 				return nil, ErrPeriodBack
 			}
+			continue
 		case token.STRING:
 			if i+1 < ln && (tokens[i+1].Type != token.PERIOD && tokens[i+1].Type != token.LBRACK && tokens[i+1].Type != token.INT) {
 				return nil, ErrStringBack

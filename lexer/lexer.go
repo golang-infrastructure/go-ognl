@@ -39,7 +39,7 @@ func (l *Lexer) peek(offset int) rune {
 }
 
 func isLetter(v rune, index int) bool {
-	return unicode.IsLetter(v) && v != '_' && (index == 0 || !unicode.IsDigit(v))
+	return unicode.IsLetter(v) || v == '_' || (index != 0 && unicode.IsDigit(v))
 }
 
 func isDigit(v rune) bool {
@@ -50,7 +50,7 @@ func (l *Lexer) letter() string {
 	pos := l.pos
 	for ; l.pos < l.ln; l.pos++ {
 		v := l.input[l.pos]
-		if !isLetter(v, pos-l.pos) {
+		if !isLetter(v, l.pos-pos+1) {
 			break
 		}
 	}
