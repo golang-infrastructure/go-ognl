@@ -1,4 +1,4 @@
-package parse
+package parser
 
 import (
 	"errors"
@@ -16,18 +16,18 @@ var ErrMapKeyMustString = errors.New("map key must be string")
 var ErrMapKeyMustInt = errors.New("map key must be int")
 var ErrIndexOutOfBounds = errors.New("index out of bounds")
 var ErrStructIndexOutOfBounds = errors.New("struct index out of bounds")
-var ErrParseInt = errors.New("parse int error")
-var ErrParseLen = errors.New("parse len error")
+var ErrParseInt = errors.New("parser int error")
+var ErrParseLen = errors.New("parser len error")
 
-func Parse(query string, obj interface{}) (interface{}, error) {
+func Parser(query string, obj interface{}) (interface{}, error) {
 	tokens, err := expr.ParseToken(lexer.NewLexer(query).GetToken())
 	if err != nil {
 		return nil, err
 	}
-	return parse(tokens, obj)
+	return parser(tokens, obj)
 }
 
-func parse(tokens []*token.Token, obj interface{}) (interface{}, error) {
+func parser(tokens []*token.Token, obj interface{}) (interface{}, error) {
 	if len(tokens) == 0 || obj == nil {
 		return obj, nil
 	}
@@ -37,30 +37,30 @@ func parse(tokens []*token.Token, obj interface{}) (interface{}, error) {
 
 	switch tokens[0].Type {
 	case token.STRING:
-		obj, err = parseString(t, v, tokens[0].Value, len(tokens))
+		obj, err = parserString(t, v, tokens[0].Value, len(tokens))
 	case token.INT:
 		i, _ := strconv.Atoi(tokens[0].Value)
-		obj, err = parseInt(t, v, i)
+		obj, err = parserInt(t, v, i)
 	case token.First:
-		obj, err = parseInt(t, v, 0)
+		obj, err = parserInt(t, v, 0)
 	case token.Last:
-		l, err := parseLen(t, v)
+		l, err := parserLen(t, v)
 		if err != nil {
 			return nil, err
 		}
-		obj, err = parseInt(t, v, l.(int)-1)
+		obj, err = parserInt(t, v, l.(int)-1)
 	case token.Len:
-		return parseLen(t, v)
+		return parserLen(t, v)
 	default:
 		return nil, ErrInvalidToken
 	}
 	if err != nil {
 		return nil, err
 	}
-	return parse(tokens[1:], obj)
+	return parser(tokens[1:], obj)
 }
 
-func parseString(t reflect.Type, v reflect.Value, tokenValue string, tokenLen int) (interface{}, error) {
+func parserString(t reflect.Type, v reflect.Value, tokenValue string, tokenLen int) (interface{}, error) {
 	if !v.IsValid() {
 		return nil, nil
 	}
@@ -73,7 +73,7 @@ func parseString(t reflect.Type, v reflect.Value, tokenValue string, tokenLen in
 		if !v.Elem().IsValid() {
 			return nil, nil
 		}
-		return parseString(t, v.Elem(), tokenValue, tokenLen)
+		return parserString(t, v.Elem(), tokenValue, tokenLen)
 	case reflect.Map:
 		// MUST map key is string
 		if t.Key().Kind() != reflect.String {
@@ -96,7 +96,7 @@ func parseString(t reflect.Type, v reflect.Value, tokenValue string, tokenLen in
 	}
 }
 
-func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, error) {
+func parserInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, error) {
 	switch v.Kind() {
 	case reflect.Ptr, reflect.Interface:
 		if v.IsNil() {
@@ -105,7 +105,7 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, err
 		if !v.Elem().IsValid() {
 			return nil, nil
 		}
-		return parseInt(t, v.Elem(), tokenValue)
+		return parserInt(t, v.Elem(), tokenValue)
 	case reflect.Map:
 		if t.Key().Kind() != reflect.Int {
 			return nil, ErrMapKeyMustInt
@@ -127,7 +127,7 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, err
 	}
 }
 
-func parseLen(t reflect.Type, v reflect.Value) (interface{}, error) {
+func parserLen(t reflect.Type, v reflect.Value) (interface{}, error) {
 	switch v.Kind() {
 	case reflect.Ptr, reflect.Interface:
 		if v.IsNil() {
@@ -137,7 +137,7 @@ func parseLen(t reflect.Type, v reflect.Value) (interface{}, error) {
 		if !v.Elem().IsValid() {
 			return 0, nil
 		}
-		return parseLen(t, v.Elem())
+		return parserLen(t, v.Elem())
 	case reflect.Slice, reflect.Array, reflect.Map:
 		return v.Len(), nil
 	case reflect.Struct:

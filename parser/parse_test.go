@@ -1,4 +1,4 @@
-package parse
+package parser
 
 import (
 	"github.com/stretchr/testify/assert"
@@ -14,7 +14,7 @@ type Mock struct {
 	Array [3]*Mock
 }
 
-func TestParse(t *testing.T) {
+func TestParser(t *testing.T) {
 	var (
 		t2 = &Mock{
 			Name: "t2",
@@ -68,7 +68,7 @@ func TestParse(t *testing.T) {
 		{".Hash1.t1.Hash1.t1.Hash1.t1.Name", "t1"},
 	}
 	for index, v := range test {
-		vv, err := Parse(v.query, t1)
+		vv, err := Parser(v.query, t1)
 		if !assert.NoError(t, err) {
 			t.Errorf("error:%v index:%d, query:%s, expected:%d, got:%d", err, index, v.query, v.value, vv)
 			continue
