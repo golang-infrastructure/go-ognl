@@ -2,7 +2,7 @@ package expr
 
 import (
 	"errors"
-	"github/songzhibin97/go-ognl/token"
+	"github.com/songzhibin97/go-ognl/token"
 )
 
 var (

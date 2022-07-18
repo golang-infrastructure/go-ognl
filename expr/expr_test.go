@@ -2,7 +2,7 @@ package expr
 
 import (
 	"errors"
-	"github/songzhibin97/go-ognl/lexer"
+	"github.com/songzhibin97/go-ognl/lexer"
 	"testing"
 )
 

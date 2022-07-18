@@ -2,9 +2,9 @@ package parse
 
 import (
 	"errors"
-	"github/songzhibin97/go-ognl/expr"
-	"github/songzhibin97/go-ognl/lexer"
-	"github/songzhibin97/go-ognl/token"
+	"github.com/songzhibin97/go-ognl/expr"
+	"github.com/songzhibin97/go-ognl/lexer"
+	"github.com/songzhibin97/go-ognl/token"
 	"reflect"
 	"strconv"
 )

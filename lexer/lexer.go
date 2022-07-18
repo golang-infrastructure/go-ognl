@@ -1,7 +1,7 @@
 package lexer
 
 import (
-	"github/songzhibin97/go-ognl/token"
+	"github.com/songzhibin97/go-ognl/token"
 	"unicode"
 )
 
