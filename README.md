@@ -57,7 +57,7 @@ func TestParse(t *testing.T) {
 		{".List last.Name", "t4"},
 	}
 	for index, v := range test {
-		vv, err := parser.Parser(v.query, t1)
+		vv, err := Parser.parse(v.query, t1)
 		if !assert.NoError(t, err) {
 			t.Errorf("error:%v index:%d, query:%s, expected:%d, got:%d", err, index, v.query, v.value, vv)
 			continue
