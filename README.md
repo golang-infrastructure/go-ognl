@@ -1,82 +1,163 @@
 # go-ognl
 
-1. 对象、map 使用 `.` 来获取(对象不确定能不能获取到未导出的值)
-2. 数组使用 `[]` 来获取; `.len` 获取数组长度 
-3. `first`、'last' 获取列表数组第一个以及最后一个 
-4. 只支持map key为 string or int 
-5. 可以忽略 `[]` 直接使用 Filed 10 要用空格隔开 
-6. 获取到基础数据类型则直接返回
+关键字符`.`、`#`、` `、`\t` `\n`、`\r`,遇到都会截断到下一层(`#`和特殊,会将当前层展开,例如一个struct,会将所有字段对应的值展开)
 
-## 预计新增
-1. 除了map 首字母大小写不敏感
-2. map key 支持可比较的任意类型
-3. `.`分隔号可以省略 使用空格替代等
-4. 结构判断,在获取到基础类型并未到达语法重点会返回错误
-5. 增加一些内置函数,比如 `len` `first` `last`,以及一些简单的运算和hook模式
-6. 增加批量获取功能 可以指定多个字段一并返回
-7. 增加预加载,指定结构cache,避免重复解析
+---
+1. 直接使用 `go_ognl.Get(obj,path)` 获取需要的值,返回对象提供 `Effective()` 判断是否有有效值, `Value()`返回解析后的对象,如果使用`#`将会返回`[]interface{}{}`,`Values()`则直接回返回一个`[]interface{}{}`,同时也提供`.Get(path)`链式调用;
+2. 使用`go_ognl.Parse(obj)` 保存为临时,可以在此基础上多次调用 `.Get(path)`
 
 
 
 ## demo
 ```go
+package go_ognl
 
-func TestParse(t *testing.T) {
+import (
+	"github.com/stretchr/testify/assert"
+	"testing"
+)
 
-	t2 := &Mock{
-		Name: "t2",
-		Age:  2,
-	}
-	t3 := &Mock{
-		Name: "t3",
-		Age:  3,
-	}
-	t4 := &Mock{
-		Name: "t4",
-		Age:  4,
-	}
-	t1 := &Mock{
-		Name: "t1",
-		Age:  1,
-		Hash1: map[string]interface{}{
+type Mock struct {
+	Name   string
+	Age    int
+	Hash1  map[string]interface{}
+	Hash2  map[int]interface{}
+	List   []*Mock
+	Array  [3]*Mock
+	lName  string
+	lAge   int
+	lHash1 map[string]interface{}
+	lHash2 map[int]interface{}
+	lList  []*Mock
+	lArray [3]*Mock
+}
+
+func TestGet(t *testing.T) {
+	var (
+		t2 = &Mock{
+			Name: "t2",
+			Age:  2,
+		}
+		hash1 = map[string]interface{}{
 			"string1": "string",
 			"int1":    1,
 			"t2":      t2,
-		},
-		Hash2: map[int]interface{}{
+		}
+		t3 = &Mock{
+			Name: "t3",
+			Age:  3,
+		}
+		t4 = &Mock{
+			Name:  "t4",
+			Age:   4,
+			Hash1: map[string]interface{}{},
+		}
+		hash2 = map[int]interface{}{
 			2: t2,
 			3: t3,
 			4: t4,
-		},
-		List:  []*Mock{t2, t3, t4},
-		Array: [3]*Mock{t2, t3, t4},
-	}
+		}
+		list  = []*Mock{t2, t3, t4}
+		array = [3]*Mock{t2, t3, t4}
+		t1    = &Mock{
+			Name:   "t1",
+			lName:  "lt1",
+			Age:    1,
+			lAge:   11,
+			Hash1:  hash1,
+			lHash1: hash1,
+			Hash2:  hash2,
+			lHash2: hash2,
+			List:   list,
+			lList:  list,
+			Array:  array,
+			lArray: array,
+		}
+	)
+	hash1["t1"] = t1
 	test := []struct {
-		query string
-		value interface{}
+		query     string
+		value     interface{}
+		effective bool
 	}{
-		{".Name", "t1"},
-		{".Age", 1},
-		{".Hash1.string1", "string"},
-		{".Hash1.int1", 1},
-		{".Hash1.t2.Name", "t2"},
-		{".Hash2[2].Name", "t2"},
-		{".List 1.Name", "t3"},
-		{".List[0].Name", "t2"},
-		{".Array[0].Name", "t2"},
-		{".hash2 [0]", nil},
-		{".List first.Name", "t2"},
-		{".List last.Name", "t4"},
+		{"Name", "t1", true},
+		{"Age", 1, true},
+		{"Hash1.string1", "string", true},
+		{"Hash1.int1", 1, true},
+		{"Hash1.t2.Name", "t2", true},
+		{"Hash2.2.Name", "t2", true},
+		{"List 1.Name", "t3", true},
+		{"List.0.Name", "t2", true},
+		{"Array 0.Name", "t2", true},
+		{"hash2.0", nil, false},
+		{"Hash1.t1.Hash1.t1.Hash1.t1.Name", "t1", true},
+		{"lName", "lt1", true},
+		{"lAge", 11, true},
+		{"lHash1.string1", "string", true},
+		{"lHash1.int1", 1, true},
+		{"lHash1.t2.Name", "t2", true},
+		{"lHash2.2.Name", "t2", true},
+		{"lList 1.Name", "t3", true},
+		{"lList.0.Name", "t2", true},
+		{"lArray 0.Name", "t2", true},
+		{"lhash2.0", nil, false},
+		{"lHash1.t1.Hash1.t1.lHash1.t1.Name", "t1", true},
+
+		{"#", []interface{}{"t1", 1, hash1, hash2, list, array, "lt1", 11, hash1, hash2, list, array}, true},
+		{"#string1#", []interface{}{"string", "string"}, true},
+		{"List#1.Name", []interface{}{"t3", "t3", "t3", "t3"}, true},
 	}
 	for index, v := range test {
-		vv, err := Parser.parse(v.query, t1)
-		if !assert.NoError(t, err) {
-			t.Errorf("error:%v index:%d, query:%s, expected:%d, got:%d", err, index, v.query, v.value, vv)
-			continue
+		vv := Get(t1, v.query)
+		if !assert.Equal(t, v.effective, vv.Effective()) {
+			t.Errorf("effective fault expected:%t, got:%t", v.effective, vv.Effective())
+			return
 		}
-		if !assert.Equal(t, v.value, vv) {
-			t.Errorf("no equal index:%d, query:%s, expected:%d, got:%d", index, v.query, v.value, vv)
+		if !assert.Equal(t, v.value, vv.Value()) {
+			t.Errorf("no equal index:%d, query:%s, expected:%v, got:%v", index, v.query, v.value, vv.Value())
+		}
+	}
+
+	p := Parse(t1)
+	for index, v := range test {
+		vv := p.Get(v.query)
+		if !assert.Equal(t, v.effective, vv.Effective()) {
+			t.Errorf("effective fault expected:%t, got:%t", v.effective, vv.Effective())
+			return
+		}
+		if !assert.Equal(t, v.value, vv.Value()) {
+			t.Errorf("no equal index:%d, query:%s, expected:%v, got:%v", index, v.query, v.value, vv.Value())
+		}
+	}
+
+	test = []struct {
+		query     string
+		value     interface{}
+		effective bool
+	}{
+		{"0", t2, true},
+		{"1", t3, true},
+		{"2", t4, true},
+		{"3", nil, false},
+		{"0.Name", "t2", true},
+		{"0.Age", 2, true},
+		{"1.Name", "t3", true},
+		{"1.Age", 3, true},
+		{"2.Name", "t4", true},
+		{"2.Age", 4, true},
+		{"#", []interface{}{t2, t3, t4}, true},
+	}
+	g1 := Get(t1, "List")
+	for index, v := range test {
+		vv := g1.Get(v.query)
+		if !assert.Equal(t, v.effective, vv.Effective()) {
+			t.Errorf("effective fault expected:%t, got:%t", v.effective, vv.Effective())
+			return
+		}
+		if !assert.Equal(t, v.value, vv.Value()) {
+			t.Errorf("no equal index:%d, query:%s, expected:%v, got:%v", index, v.query, v.value, vv.Value())
 		}
 	}
 }
+
 ```
