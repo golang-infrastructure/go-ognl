@@ -1,6 +1,6 @@
 module github.com/songzhibin97/go-ognl
 
-go 1.18
+go 1.16
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
