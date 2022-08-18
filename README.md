@@ -1,6 +1,6 @@
 # go-ognl
 
-关键字符`.`、`#`、` `、`\t` `\n`、`\r`,遇到都会截断到下一层(`#`和特殊,会将当前层展开,例如一个struct,会将所有字段对应的值展开)
+关键字符`.`、`#`,遇到都会截断到下一层(`#`和特殊,会将当前层展开,例如一个struct,会将所有字段对应的值展开)
 
 ---
 1. 直接使用 `go_ognl.Get(obj,path)` 获取需要的值,返回对象提供 `Effective()` 判断是否有有效值, `Value()`返回解析后的对象,如果使用`#`将会返回`[]interface{}{}`,`Values()`则直接回返回一个`[]interface{}{}`,同时也提供`.Get(path)`链式调用;
@@ -86,9 +86,9 @@ func TestGet(t *testing.T) {
 		{"Hash1.int1", 1, true},
 		{"Hash1.t2.Name", "t2", true},
 		{"Hash2.2.Name", "t2", true},
-		{"List 1.Name", "t3", true},
+		{"List.1.Name", "t3", true},
 		{"List.0.Name", "t2", true},
-		{"Array 0.Name", "t2", true},
+		{"Array.0.Name", "t2", true},
 		{"hash2.0", nil, false},
 		{"Hash1.t1.Hash1.t1.Hash1.t1.Name", "t1", true},
 		{"lName", "lt1", true},
@@ -97,9 +97,9 @@ func TestGet(t *testing.T) {
 		{"lHash1.int1", 1, true},
 		{"lHash1.t2.Name", "t2", true},
 		{"lHash2.2.Name", "t2", true},
-		{"lList 1.Name", "t3", true},
+		{"lList.1.Name", "t3", true},
 		{"lList.0.Name", "t2", true},
-		{"lArray 0.Name", "t2", true},
+		{"lArray.0.Name", "t2", true},
 		{"lhash2.0", nil, false},
 		{"lHash1.t1.Hash1.t1.lHash1.t1.Name", "t1", true},
 

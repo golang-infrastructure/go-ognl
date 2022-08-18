@@ -243,7 +243,7 @@ func Get(value interface{}, path string) Result {
 		loop:
 			for ; index < len(path); index++ {
 				switch path[index] {
-				case '.', '#', ' ', '\t', '\n', '\r':
+				case '.', '#':
 					index--
 					break loop
 				}
