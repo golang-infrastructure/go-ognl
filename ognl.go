@@ -1,4 +1,4 @@
-package go_ognl
+package ognl
 
 import (
 	"errors"
