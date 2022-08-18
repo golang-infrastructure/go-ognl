@@ -1,4 +1,4 @@
-module github.com/songzhibin97/go-ognl
+module github.com/songzhibin97/go_ognl
 
 go 1.16
 
