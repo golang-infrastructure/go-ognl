@@ -98,7 +98,7 @@ func TestGet(t *testing.T) {
 	for index, v := range test {
 		vv := Get(t1, v.query)
 		if !assert.Equal(t, v.effective, vv.Effective()) {
-			t.Errorf("effective fault expected:%t, got:%t", v.effective, vv.Effective())
+			t.Errorf("effective fault expected:%t, got:%t, index:%d", v.effective, vv.Effective(), index)
 			return
 		}
 		if !assert.Equal(t, v.value, vv.Value()) {
@@ -143,6 +143,26 @@ func TestGet(t *testing.T) {
 			return
 		}
 		if !assert.Equal(t, v.value, vv.Value()) {
+			t.Errorf("no equal index:%d, query:%s, expected:%v, got:%v", index, v.query, v.value, vv.Value())
+		}
+	}
+
+	test = []struct {
+		query     string
+		value     interface{}
+		effective bool
+	}{
+		{"List", []interface{}{t2, t3, t4}, true},
+		{"Array", []interface{}{t2, t3, t4}, true},
+	}
+	g1 = Get(t1, "")
+	for index, v := range test {
+		vv := g1.Get(v.query)
+		if !assert.Equal(t, v.effective, vv.Effective()) {
+			t.Errorf("effective fault expected:%t, got:%t", v.effective, vv.Effective())
+			return
+		}
+		if !assert.Equal(t, v.value, vv.Values()) {
 			t.Errorf("no equal index:%d, query:%s, expected:%v, got:%v", index, v.query, v.value, vv.Value())
 		}
 	}
