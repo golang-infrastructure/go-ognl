@@ -9,13 +9,21 @@ import (
 )
 
 var ErrInvalidStructure = errors.New("the structure cannot continue")
+
 var ErrSliceSubscript = errors.New("invalid slice subscript")
+
 var ErrMapKeyMustString = errors.New("map key must be string")
+
 var ErrMapKeyMustInt = errors.New("map key must be int")
+
 var ErrIndexOutOfBounds = errors.New("index out of bounds")
+
 var ErrStructIndexOutOfBounds = errors.New("struct index out of bounds")
+
 var ErrParseInt = errors.New("parse int error")
+
 var ErrUnableExpand = errors.New("unable to expand")
+
 var ErrInvalidValue = errors.New("invalid value")
 
 // Type is Result type
@@ -535,16 +543,20 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		return nil, Invalid, ErrSliceSubscript
 
 	case reflect.Struct:
-		v := v.FieldByName(value)
-		if !v.IsValid() {
+		rv := v.FieldByName(value)
+		if !rv.IsValid() {
 			return nil, Invalid, nil
 		}
 
-		if v.CanInterface() {
-			return v.Interface(), Type(v.Kind()), nil
+		if rv.CanInterface() {
+			return rv.Interface(), Type(rv.Kind()), nil
 		}
 
-		return reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Interface(), Type(v.Kind()), nil
+		cp := reflect.New(v.Type()).Elem()
+		cp.Set(v)
+		rv = cp.FieldByName(value)
+
+		return reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem().Interface(), Type(rv.Kind()), nil
 
 	default:
 		return nil, Invalid, ErrInvalidStructure
@@ -598,9 +610,14 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 			return nil, Invalid, nil
 		}
 
-		if v.CanInterface() {
+		if value.CanInterface() {
 			return value.Interface(), Type(value.Kind()), nil
 		}
+
+		cp := reflect.New(v.Type()).Elem()
+		cp.Set(v)
+		value = cp.Field(tokenValue)
+
 		return reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Interface(), Type(value.Kind()), nil
 
 	default:
@@ -663,6 +680,10 @@ func deployment(t reflect.Type, v reflect.Value) ([]interface{}, Type, error) {
 			if value.CanInterface() {
 				ret = append(ret, value.Interface())
 			} else {
+				cp := reflect.New(v.Type()).Elem()
+				cp.Set(v)
+				value = cp.Field(i)
+
 				ret = append(ret, reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Interface())
 			}
 		}
