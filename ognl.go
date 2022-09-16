@@ -524,7 +524,7 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseString(t, v.Elem(), value)
+		return parseString(t.Elem(), v.Elem(), value)
 
 	case reflect.Map:
 		// MUST map key is string
@@ -549,6 +549,10 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		}
 
 		if rv.CanInterface() {
+			nv, nt, ne := parseString(reflect.TypeOf(rv.Interface()), reflect.ValueOf(rv.Interface()), value)
+			if ne == nil && nt != Invalid {
+				return nv, nt, ne
+			}
 			return rv.Interface(), Type(rv.Kind()), nil
 		}
 
@@ -556,7 +560,18 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		cp.Set(v)
 		rv = cp.FieldByName(value)
 
-		return reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem().Interface(), Type(rv.Kind()), nil
+		res := reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem().Interface()
+
+		rt, _ := t.FieldByName(value)
+
+		if rt.Anonymous {
+			nv, nt, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value)
+			if ne == nil && nt != Invalid {
+				return nv, nt, ne
+			}
+		}
+
+		return res, Type(rv.Kind()), nil
 
 	default:
 		return nil, Invalid, ErrInvalidStructure
@@ -575,7 +590,7 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseInt(t, v.Elem(), tokenValue)
+		return parseInt(t.Elem(), v.Elem(), tokenValue)
 	case reflect.Map:
 		// MUST map key is int
 		if t.Key().Kind() != reflect.Int {
@@ -611,6 +626,10 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		}
 
 		if value.CanInterface() {
+			nv, nt, ne := parseInt(reflect.TypeOf(value), reflect.ValueOf(value), tokenValue)
+			if ne == nil && nt != Invalid {
+				return nv, nt, ne
+			}
 			return value.Interface(), Type(value.Kind()), nil
 		}
 
@@ -618,7 +637,18 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		cp.Set(v)
 		value = cp.Field(tokenValue)
 
-		return reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Interface(), Type(value.Kind()), nil
+		res := reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Interface()
+
+		rt := t.Field(tokenValue)
+
+		if rt.Anonymous {
+			nv, nt, ne := parseInt(reflect.TypeOf(res), reflect.ValueOf(res), tokenValue)
+			if ne == nil && nt != Invalid {
+				return nv, nt, ne
+			}
+		}
+
+		return res, Type(value.Kind()), nil
 
 	default:
 		return nil, Invalid, ErrParseInt

@@ -215,3 +215,43 @@ func TestGet(t *testing.T) {
 		}
 	}
 }
+
+type Repetition struct {
+	Repetition string
+}
+
+type RepetitionDetail struct {
+	*Repetition
+}
+
+func TestRepetition(t *testing.T) {
+
+	r := RepetitionDetail{
+		Repetition: &Repetition{
+			Repetition: "r1",
+		},
+	}
+
+	vv := Get(r, "Repetition").Value()
+	assert.Equal(t, vv, "r1")
+}
+
+type repetition struct {
+	repetition string
+}
+
+type repetitionDetail struct {
+	*repetition
+}
+
+func TestRepetition2(t *testing.T) {
+
+	r := repetitionDetail{
+		repetition: &repetition{
+			repetition: "r2",
+		},
+	}
+
+	vv := Get(r, "repetition").Value()
+	assert.Equal(t, vv, "r2")
+}
