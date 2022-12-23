@@ -61,6 +61,10 @@ const (
 
 func (t Type) String() string {
 	switch t {
+	case Func:
+		return "func"
+	case Chan:
+		return "chan"
 	case Pointer:
 		return "pointer"
 	case Interface:
