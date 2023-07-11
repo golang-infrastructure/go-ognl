@@ -318,16 +318,9 @@ func GetE(value interface{}, path string) (Result, error) {
 			}
 
 		default:
-			start := index
-		loop:
-			for ; index < len(path); index++ {
-				switch path[index] {
-				case '.', '#':
-					index--
-					break loop
-				}
-			}
-			sv := path[start:min(index+1, len(path))]
+			key, newIndex := parseNextKey(path, index)
+			index = newIndex
+			sv := key
 			v, err := strconv.Atoi(sv)
 			digit := err == nil && v >= 0
 			switch result.deployment {
@@ -449,16 +442,9 @@ func Get(value interface{}, path string) Result {
 			}
 
 		default:
-			start := index
-		loop:
-			for ; index < len(path); index++ {
-				switch path[index] {
-				case '.', '#':
-					index--
-					break loop
-				}
-			}
-			sv := path[start:min(index+1, len(path))]
+			key, newIndex := parseNextKey(path, index)
+			index = newIndex
+			sv := key
 			v, err := strconv.Atoi(sv)
 			digit := err == nil && v >= 0
 			switch result.deployment {
@@ -506,6 +492,37 @@ func Get(value interface{}, path string) Result {
 	}
 
 	return result
+}
+
+// 从选择器中解析出下一个要处理的key
+// params:
+// selector: 路径选择器，比如"Foo.Bar.Name"，比如"Foo\\.Bar\\.Name"
+// index: 选择器上次消费到的位置
+//
+// returns:
+// string 下一个要解析的key
+// index selector被消费到的位置
+func parseNextKey(selector string, index int) (string, int) {
+	key := make([]byte, 0)
+loop:
+	for ; index < len(selector); index++ {
+		switch selector[index] {
+		case '\\':
+			// 先跳过转义字符
+			index++
+			// 转义字符，无论下一个字符是什么都跳过，如果有的话
+			if index < len(selector) {
+				key = append(key, selector[index])
+			}
+		case '.', '#':
+			index--
+			break loop
+		default:
+			// 普通字符，当做key的一部分消费掉
+			key = append(key, selector[index])
+		}
+	}
+	return string(key), index
 }
 
 func GetMany(value interface{}, path ...string) []Result {

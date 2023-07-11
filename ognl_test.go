@@ -408,3 +408,23 @@ func TestBaseType(t *testing.T) {
 		assert.Equal(t, int(rv.Kind()), int(tp))
 	}
 }
+
+type foo struct {
+	Bar *bar
+}
+
+type bar struct {
+	Name string
+}
+
+// 测试选择器转义字符
+func TestEscape(t *testing.T) {
+	m := make(map[string]*foo)
+	t1 := &foo{Bar: &bar{Name: "bar name 001"}}
+	m["Foo.Bar.Name"] = t1
+	m["Foo"] = &foo{Bar: &bar{Name: "bar name 002"}}
+
+	assert.Equal(t, t1, Get(m, "Foo\\.Bar\\.Name").Value())
+	assert.Equal(t, "bar name 002", Get(m, "Foo.Bar.Name").Value())
+
+}
