@@ -419,12 +419,25 @@ type bar struct {
 
 // 测试选择器转义字符
 func TestEscape(t *testing.T) {
-	m := make(map[string]*foo)
+	m := make(map[string]any)
 	t1 := &foo{Bar: &bar{Name: "bar name 001"}}
-	m["Foo.Bar.Name"] = t1
-	m["Foo"] = &foo{Bar: &bar{Name: "bar name 002"}}
 
+	m["Foo.Bar.Name"] = t1
 	assert.Equal(t, t1, Get(m, "Foo\\.Bar\\.Name").Value())
+
+	m["Foo"] = &foo{Bar: &bar{Name: "bar name 002"}}
 	assert.Equal(t, "bar name 002", Get(m, "Foo.Bar.Name").Value())
+
+	m[".Foo"] = "bar name 003"
+	assert.Equal(t, "bar name 003", Get(m, "\\.Foo").Value())
+
+	m["Foo."] = "bar name 004"
+	assert.Equal(t, "bar name 004", Get(m, "Foo\\.").Value())
+
+	m["Foo.....Bar"] = "bar name 005"
+	assert.Equal(t,  "bar name 005", Get(m, "Foo\\.\\.\\.\\.\\.Bar").Value())
+
+	m["Foo.....Bar"] = "bar name 005"
+	assert.Equal(t,  nil, Get(m, "Foo\\.\\.\\.\\.\\.Bar.1").Value())
 
 }
