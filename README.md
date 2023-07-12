@@ -11,7 +11,7 @@
 
 ## download
 ```shell
-go get github.com/songzhibin97/go-ognl
+go get github.com/golang-infrastructure/go-ognl
 ```
 
 ## demo
