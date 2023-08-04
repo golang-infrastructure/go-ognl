@@ -1,4 +1,4 @@
-module github.com/songzhibin97/go-ognl
+module github.com/golang-infrastructure/go-ognl
 
 go 1.18
 

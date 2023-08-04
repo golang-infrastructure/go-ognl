@@ -435,9 +435,27 @@ func TestEscape(t *testing.T) {
 	assert.Equal(t, "bar name 004", Get(m, "Foo\\.").Value())
 
 	m["Foo.....Bar"] = "bar name 005"
-	assert.Equal(t,  "bar name 005", Get(m, "Foo\\.\\.\\.\\.\\.Bar").Value())
+	assert.Equal(t, "bar name 005", Get(m, "Foo\\.\\.\\.\\.\\.Bar").Value())
 
 	m["Foo.....Bar"] = "bar name 005"
-	assert.Equal(t,  nil, Get(m, "Foo\\.\\.\\.\\.\\.Bar.1").Value())
+	assert.Equal(t, nil, Get(m, "Foo\\.\\.\\.\\.\\.Bar.1").Value())
+}
 
+func TestDeep(t *testing.T) {
+	type Test struct {
+		First  string
+		Middle *Test
+		last   int
+	}
+	t1 := &Test{
+		First: "first",
+		last:  7,
+	}
+	t1.Middle = t1
+	t.Log(Get(t1, "First").Value())         // first
+	t.Log(Get(t1, "last").Value())          // 7
+	t.Log(Get(t1, "Middle.Middle").Value()) // 7
+	t.Log(Get(t1, "#").Value())             // []interface{}{"first",t1,7}
+	t.Log(Get(t1, "##").Value())            // []interface{}{"first","first",t1,7,7}
+	t.Log(Get(t1, "##").Values())           // []interface{}{"first","first",t1,7,7}
 }

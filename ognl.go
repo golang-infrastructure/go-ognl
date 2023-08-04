@@ -569,14 +569,6 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 			return nil, Invalid, nil
 		}
 
-		if rv.CanInterface() {
-			nv, nt, ne := parseString(reflect.TypeOf(rv.Interface()), reflect.ValueOf(rv.Interface()), value)
-			if ne == nil && nt != Invalid {
-				return nv, nt, ne
-			}
-			return rv.Interface(), Type(rv.Kind()), nil
-		}
-
 		cp := reflect.New(v.Type()).Elem()
 		cp.Set(v)
 		rv = cp.FieldByName(value)
@@ -644,14 +636,6 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		value := v.Field(tokenValue)
 		if !value.IsValid() {
 			return nil, Invalid, nil
-		}
-
-		if value.CanInterface() {
-			nv, nt, ne := parseInt(reflect.TypeOf(value), reflect.ValueOf(value), tokenValue)
-			if ne == nil && nt != Invalid {
-				return nv, nt, ne
-			}
-			return value.Interface(), Type(value.Kind()), nil
 		}
 
 		cp := reflect.New(v.Type()).Elem()
