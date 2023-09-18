@@ -459,3 +459,228 @@ func TestDeep(t *testing.T) {
 	t.Log(Get(t1, "##").Value())            // []interface{}{"first","first",t1,7,7}
 	t.Log(Get(t1, "##").Values())           // []interface{}{"first","first",t1,7,7}
 }
+
+func Test_parseLastKeyIndex(t *testing.T) {
+	type args struct {
+		selector string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantVal string
+	}{
+		{
+			name: "",
+			args: args{
+				selector: ".name",
+			},
+			wantVal: "",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "First",
+			},
+			wantVal: "",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "#",
+			},
+			wantVal: "",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "##",
+			},
+			wantVal: "#",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "###",
+			},
+			wantVal: "##",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "Middle.Middle",
+			},
+			wantVal: "Middle",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "Middle.Middle#",
+			},
+			wantVal: "Middle.Middle",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "Foo\\.Bar\\.Name",
+			},
+			wantVal: "",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "Foo\\.\\.\\.\\.\\.Bar",
+			},
+			wantVal: "",
+		},
+		{
+			name: "",
+			args: args{
+				selector: "Foo\\.\\.\\.\\.\\.Bar.1",
+			},
+			wantVal: "Foo\\.\\.\\.\\.\\.Bar",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx := parseLastKeyIndex(tt.args.selector)
+			assert.Equalf(t, tt.wantVal, tt.args.selector[:idx], "parseLastKeyIndex(%v)", tt.args.selector[:idx])
+		})
+	}
+}
+
+func TestSet(t *testing.T) {
+	var (
+		t2 = &Mock{
+			Name: "t2",
+			Age:  2,
+		}
+		hash1 = map[string]interface{}{
+			"string1":      "string",
+			"int1":         1,
+			"t2":           t2,
+			"Foo.Bar.Name": "bar name 001",
+		}
+		t3 = &Mock{
+			Name: "t3",
+			Age:  3,
+		}
+		t4 = &Mock{
+			Name:  "t4",
+			Age:   4,
+			Hash1: map[string]interface{}{},
+		}
+		hash2 = map[int]interface{}{
+			2: t2,
+			3: t3,
+			4: t4,
+		}
+		list  = []*Mock{t2, t3, t4}
+		array = [3]*Mock{t2, t3, t4}
+		t1    = &Mock{
+			Name:   "t1",
+			lName:  "lt1",
+			Age:    1,
+			lAge:   11,
+			Hash1:  hash1,
+			lHash1: hash1,
+			Hash2:  hash2,
+			lHash2: hash2,
+			List:   list,
+			lList:  list,
+			Array:  array,
+			lArray: array,
+		}
+	)
+	hash1["t1"] = t1
+
+	type args struct {
+		path  string
+		value interface{}
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr assert.ErrorAssertionFunc
+	}{
+		{
+			name: "",
+			args: args{
+				path:  "Name",
+				value: "t1change",
+			},
+			wantErr: nil,
+		},
+		{
+			name: "",
+			args: args{
+				path:  "Age",
+				value: uint(10),
+			},
+			wantErr: nil,
+		},
+		{
+			name: "",
+			args: args{
+				path: "Hash1",
+				value: map[string]interface{}{
+					"key": "value",
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "",
+			args: args{
+				path: "Array",
+				value: [3]*Mock{
+					t1,
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "",
+			args: args{
+				path: "List",
+				value: []*Mock{
+					t3,
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "",
+			args: args{
+				path:  "List.0.Name",
+				value: "hhh",
+			},
+			wantErr: nil,
+		},
+		{
+			name: "",
+			args: args{
+				path:  "Array.0.Name",
+				value: "hhh",
+			},
+			wantErr: nil,
+		},
+		{
+			name: "",
+			args: args{
+				path:  "Hash1.Foo\\.Bar\\.Name",
+				value: "bar name 002",
+			},
+			wantErr: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Set(t1, tt.args.path, tt.args.value)
+			if tt.wantErr != nil {
+				tt.wantErr(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

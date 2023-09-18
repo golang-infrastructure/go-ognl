@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"unsafe"
 )
 
@@ -25,6 +26,8 @@ var ErrParseInt = errors.New("parse int error")
 var ErrUnableExpand = errors.New("unable to expand")
 
 var ErrInvalidValue = errors.New("invalid value")
+
+var ErrInvalidSet = errors.New("invalid set")
 
 // Type is Result type
 type Type int
@@ -525,6 +528,21 @@ loop:
 	return string(key), index
 }
 
+func parseLastKeyIndex(selector string) int {
+	idx := len(selector) - 1
+	for ; idx > 0; idx-- {
+		switch selector[idx] {
+		case ' ', '\t', '\n', '\r', '.', '#':
+			if idx-1 >= 0 && selector[idx-1] == '\\' {
+				continue
+			} else {
+				return idx
+			}
+		}
+	}
+	return idx
+}
+
 func GetMany(value interface{}, path ...string) []Result {
 	results := make([]Result, 0, len(path))
 	for _, s := range path {
@@ -749,9 +767,216 @@ func warpError(err error, object interface{}, path string) error {
 	return fmt.Errorf("object:%v,path:%s,err: %w", object, path, err)
 }
 
-func min(a, b int) int {
-	if a > b {
-		return b
+func Set(obj interface{}, path string, value interface{}) error {
+	idx := parseLastKeyIndex(path)
+	parentPath := path[:idx]
+	offset := 1
+	if idx == 0 && len(path) > 0 && (path[0] != '.' && path[0] != '#' && path[0] != ' ') {
+		offset = 0
 	}
-	return a
+	key := strings.ReplaceAll(path[idx+offset:], "\\", "")
+
+	if key == "" {
+		return fmt.Errorf("path:%s target path is empty", parentPath)
+	}
+	result, err := GetE(obj, parentPath)
+	if err != nil {
+		return err
+	}
+
+	if !result.Effective() {
+		return fmt.Errorf("path:%s, invalid parent obj", parentPath)
+	}
+
+	if result.deployment {
+		list := result.raw.([]interface{})
+		ln := len(list)
+		for i := 0; i < ln; i++ {
+			err = set(list[i], key, value)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return set(result.raw, key, value)
+}
+
+func set(obj interface{}, key string, value interface{}) error {
+
+	if IsNil(obj) {
+		return ErrInvalidValue
+	}
+
+	v, err := strconv.Atoi(key)
+	digit := err == nil && v >= 0
+
+	t, f := reflect.TypeOf(obj), reflect.ValueOf(obj)
+	if digit {
+		return setInt(t, f, v, value)
+	}
+	return setString(t, f, key, value)
+}
+
+func setString(t reflect.Type, v reflect.Value, key string, value interface{}) error {
+	if !v.IsValid() {
+		return ErrInvalidValue
+	}
+
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		if v.IsNil() {
+			return ErrInvalidValue
+		}
+		if !v.Elem().IsValid() {
+			return ErrInvalidValue
+		}
+		return setString(t.Elem(), v.Elem(), key, value)
+
+	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return ErrMapKeyMustString
+		}
+
+		newValue := reflect.ValueOf(value)
+		if t.Elem() == newValue.Type() {
+			v.SetMapIndex(reflect.ValueOf(key), newValue)
+			return nil
+		} else if newValue.Type().ConvertibleTo(t.Elem()) {
+			v.SetMapIndex(reflect.ValueOf(key), newValue.Convert(t.Elem()))
+			return nil
+		} else {
+			return fmt.Errorf("type mismatch in map assignment: want %s, got %s", t.Elem().String(), newValue.Type().String())
+		}
+
+	case reflect.Struct:
+		field := v.FieldByName(key)
+		if !field.IsValid() {
+			return ErrStructIndexOutOfBounds
+		}
+		if !field.CanSet() {
+			return ErrInvalidSet
+		}
+
+		newValue := reflect.ValueOf(value)
+		if newValue.Type() == field.Type() {
+			field.Set(newValue)
+			return nil
+		} else if newValue.Type().ConvertibleTo(field.Type()) {
+			field.Set(newValue.Convert(field.Type()))
+			return nil
+		} else {
+			return fmt.Errorf("type mismatch in struct assignment: want %s, got %s", field.Type().String(), newValue.Type().String())
+		}
+
+	default:
+		return ErrInvalidStructure
+	}
+}
+
+func setInt(t reflect.Type, v reflect.Value, key int, value interface{}) error {
+	if !v.IsValid() {
+		return ErrInvalidValue
+	}
+
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		if v.IsNil() {
+			return ErrInvalidValue
+		}
+		if !v.Elem().IsValid() {
+			return ErrInvalidValue
+		}
+
+		return setInt(t.Elem(), v.Elem(), key, value)
+	case reflect.Map:
+		if t.Key().Kind() != reflect.Int {
+			return ErrMapKeyMustInt
+		}
+
+		if v.IsNil() {
+			v.Set(reflect.MakeMap(t))
+		}
+
+		newValue := reflect.ValueOf(value)
+		if newValue.Type() == t.Elem() {
+			v.SetMapIndex(reflect.ValueOf(key), newValue)
+			return nil
+		} else if newValue.Type().ConvertibleTo(t.Elem()) {
+			v.SetMapIndex(reflect.ValueOf(key), newValue.Convert(t.Elem()))
+			return nil
+		} else {
+			return fmt.Errorf("type mismatch in map assignment: want %s, got %s", t.Elem().String(), newValue.Type().String())
+		}
+
+	case reflect.Slice, reflect.Array:
+		if key < 0 || key >= v.Len() {
+			return ErrIndexOutOfBounds
+		}
+
+		field := v.Index(key)
+		if !field.IsValid() {
+			return ErrInvalidSet
+		}
+		if !field.CanSet() {
+			return ErrInvalidSet
+		}
+
+		newValue := reflect.ValueOf(value)
+		if newValue.Type() == field.Type() {
+			field.Set(newValue)
+			return nil
+		} else if newValue.Type().ConvertibleTo(field.Type()) {
+			field.Set(newValue.Convert(field.Type()))
+			return nil
+		} else {
+			return fmt.Errorf("type mismatch in slice assignment: want %s, got %s", field.Type().String(), newValue.Type().String())
+		}
+
+	case reflect.Struct:
+		if key < 0 || key >= v.NumField() {
+			return ErrStructIndexOutOfBounds
+		}
+
+		field := v.Field(key)
+		if !field.IsValid() {
+			return ErrInvalidSet
+		}
+		if !field.CanSet() {
+			return ErrInvalidSet
+		}
+
+		newValue := reflect.ValueOf(value)
+		if newValue.Type() == field.Type() {
+			field.Set(newValue)
+			return nil
+		} else if newValue.Type().ConvertibleTo(field.Type()) {
+			field.Set(newValue.Convert(field.Type()))
+			return nil
+		} else {
+			return fmt.Errorf("type mismatch in struct assignment: want %s, got %s", field.Type().String(), newValue.Type().String())
+		}
+
+	default:
+		return ErrInvalidStructure
+	}
+}
+
+func IsNil(value interface{}) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Slice:
+		return v.IsNil()
+	case reflect.Ptr:
+		elem := v.Elem()
+		if !elem.IsValid() {
+			return true
+		}
+		return IsNil(elem.Interface())
+	default:
+		return false
+	}
 }
