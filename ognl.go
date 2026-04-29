@@ -285,7 +285,11 @@ func GetE(value interface{}, path string) (Result, error) {
 				}
 				return result, nil
 			default:
-				return GetE(result.raw, path[index+1:])
+				value = result.raw
+				tp = reflect.TypeOf(value)
+				tv = reflect.ValueOf(value)
+				path = path[index+1:]
+				index = -1
 			}
 		case '#':
 			// 转化成slice 类型 平铺
@@ -413,7 +417,11 @@ func Get(value interface{}, path string) Result {
 				result.raw = list[ln:]
 				return result
 			default:
-				return Get(result.raw, path[index+1:])
+				value = result.raw
+				tp = reflect.TypeOf(value)
+				tv = reflect.ValueOf(value)
+				path = path[index+1:]
+				index = -1
 			}
 		case '#':
 			// 转化成slice 类型 平铺
