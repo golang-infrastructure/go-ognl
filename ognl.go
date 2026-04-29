@@ -314,7 +314,6 @@ func GetE(value interface{}, path string) (Result, error) {
 				if err != nil {
 					return result, warpError(err, value, "#")
 				}
-				result.diagnosis = append(result.diagnosis, err)
 			}
 
 		default:
