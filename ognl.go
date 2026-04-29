@@ -195,7 +195,10 @@ func (r Result) Diagnosis() []error {
 func (r Result) Get(path string) Result {
 	if r.deployment {
 		nr := r
-		list := nr.raw.([]interface{})
+		origList := nr.raw.([]interface{})
+		list := make([]interface{}, len(origList))
+		copy(list, origList)
+		nr.diagnosis = append([]error(nil), nr.diagnosis...)
 		ln := len(list)
 		for i := 0; i < ln; i++ {
 			next := Get(list[i], path)
@@ -213,7 +216,10 @@ func (r Result) Get(path string) Result {
 func (r Result) GetE(path string) (Result, error) {
 	if r.deployment {
 		nr := r
-		list := nr.raw.([]interface{})
+		origList := nr.raw.([]interface{})
+		list := make([]interface{}, len(origList))
+		copy(list, origList)
+		nr.diagnosis = append([]error(nil), nr.diagnosis...)
 		ln := len(list)
 		for i := 0; i < ln; i++ {
 			next, err := GetE(list[i], path)
