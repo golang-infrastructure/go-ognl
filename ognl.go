@@ -548,17 +548,20 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		return parseString(t.Elem(), v.Elem(), value)
 
 	case reflect.Map:
-		// MUST map key is string
 		if t.Key().Kind() != reflect.String {
 			return nil, Invalid, ErrMapKeyMustString
 		}
 
-		value := v.MapIndex(reflect.ValueOf(value))
-		if !value.IsValid() {
+		mapKey := reflect.ValueOf(value)
+		if !mapKey.Type().AssignableTo(t.Key()) {
+			mapKey = mapKey.Convert(t.Key())
+		}
+		mapVal := v.MapIndex(mapKey)
+		if !mapVal.IsValid() {
 			return nil, Invalid, nil
 		}
 
-		return value.Interface(), Type(value.Kind()), nil
+		return mapVal.Interface(), Type(mapVal.Kind()), nil
 
 	case reflect.Slice, reflect.Array:
 		return nil, Invalid, ErrSliceSubscript
@@ -605,17 +608,21 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		}
 		return parseInt(t.Elem(), v.Elem(), tokenValue)
 	case reflect.Map:
-		// MUST map key is int
-		if t.Key().Kind() != reflect.Int {
+		keyKind := t.Key().Kind()
+		if !(keyKind >= reflect.Int && keyKind <= reflect.Int64) {
 			return nil, Invalid, ErrMapKeyMustInt
 		}
 
-		value := v.MapIndex(reflect.ValueOf(tokenValue))
-		if !value.IsValid() {
+		mapKey := reflect.ValueOf(tokenValue)
+		if !mapKey.Type().AssignableTo(t.Key()) {
+			mapKey = mapKey.Convert(t.Key())
+		}
+		mapVal := v.MapIndex(mapKey)
+		if !mapVal.IsValid() {
 			return nil, Invalid, nil
 		}
 
-		return value.Interface(), Type(value.Kind()), nil
+		return mapVal.Interface(), Type(mapVal.Kind()), nil
 
 	case reflect.Slice, reflect.Array:
 		if tokenValue < 0 || tokenValue >= v.Len() {
