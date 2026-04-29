@@ -533,7 +533,13 @@ func GetMany(value interface{}, path ...string) []Result {
 	return results
 }
 
+const maxAnonDepth = 16
+
 func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Type, error) {
+	return parseStringDepth(t, v, value, 0)
+}
+
+func parseStringDepth(t reflect.Type, v reflect.Value, value string, depth int) (interface{}, Type, error) {
 	if !v.IsValid() {
 		return nil, Invalid, nil
 	}
@@ -545,7 +551,7 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseString(t.Elem(), v.Elem(), value)
+		return parseStringDepth(t.Elem(), v.Elem(), value, depth)
 
 	case reflect.Map:
 		// MUST map key is string
@@ -577,8 +583,8 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 
 		rt, _ := t.FieldByName(value)
 
-		if rt.Anonymous {
-			nv, nt, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value)
+		if rt.Anonymous && depth < maxAnonDepth {
+			nv, nt, ne := parseStringDepth(reflect.TypeOf(res), reflect.ValueOf(res), value, depth+1)
 			if ne == nil && nt != Invalid {
 				return nv, nt, ne
 			}
@@ -592,6 +598,10 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 }
 
 func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Type, error) {
+	return parseIntDepth(t, v, tokenValue, 0)
+}
+
+func parseIntDepth(t reflect.Type, v reflect.Value, tokenValue int, depth int) (interface{}, Type, error) {
 	if !v.IsValid() {
 		return nil, Invalid, nil
 	}
@@ -603,7 +613,7 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseInt(t.Elem(), v.Elem(), tokenValue)
+		return parseIntDepth(t.Elem(), v.Elem(), tokenValue, depth)
 	case reflect.Map:
 		// MUST map key is int
 		if t.Key().Kind() != reflect.Int {
@@ -646,8 +656,8 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 
 		rt := t.Field(tokenValue)
 
-		if rt.Anonymous {
-			nv, nt, ne := parseInt(reflect.TypeOf(res), reflect.ValueOf(res), tokenValue)
+		if rt.Anonymous && depth < maxAnonDepth {
+			nv, nt, ne := parseIntDepth(reflect.TypeOf(res), reflect.ValueOf(res), tokenValue, depth+1)
 			if ne == nil && nt != Invalid {
 				return nv, nt, ne
 			}
