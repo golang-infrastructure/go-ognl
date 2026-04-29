@@ -180,7 +180,7 @@ func (r Result) ValuesE() ([]interface{}, error) {
 
 	v, t, err := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw))
 	if err != nil {
-		return nil, warpError(err, r.raw, "")
+		return nil, wrapError(err, r.raw, "")
 	}
 	if t == Invalid {
 		return []interface{}{r.raw}, nil
@@ -218,7 +218,7 @@ func (r Result) GetE(path string) (Result, error) {
 		for i := 0; i < ln; i++ {
 			next, err := GetE(list[i], path)
 			if err != nil {
-				nr.diagnosis = append(nr.diagnosis, warpError(err, list[i], path))
+				nr.diagnosis = append(nr.diagnosis, wrapError(err, list[i], path))
 			}
 			if next.typ != Invalid {
 				list = append(list, next.raw)
@@ -227,7 +227,7 @@ func (r Result) GetE(path string) (Result, error) {
 		}
 		nr.raw = list[ln:]
 		if len(list[ln:]) == 0 {
-			return nr, warpError(ErrInvalidValue, list, path)
+			return nr, wrapError(ErrInvalidValue, list, path)
 		}
 		return nr, nil
 	}
@@ -243,7 +243,7 @@ func GetE(value interface{}, path string) (Result, error) {
 		return Result{typ: Interface, raw: value}, nil
 	}
 	if value == nil {
-		return Result{typ: Invalid, raw: value}, warpError(ErrInvalidValue, value, path)
+		return Result{typ: Invalid, raw: value}, wrapError(ErrInvalidValue, value, path)
 	}
 
 	var (
@@ -258,7 +258,7 @@ func GetE(value interface{}, path string) (Result, error) {
 
 	if !tv.IsValid() {
 		result.typ = Invalid
-		return result, warpError(ErrInvalidValue, value, path)
+		return result, wrapError(ErrInvalidValue, value, path)
 	}
 
 	for ; index < len(path); index++ {
@@ -271,7 +271,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				for i := 0; i < ln; i++ {
 					next, err := GetE(list[i], path[index+1:])
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], path[index+1:]))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], path[index+1:]))
 					}
 					if next.typ != Invalid {
 						list = append(list, next.raw)
@@ -281,7 +281,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				}
 				result.raw = list[ln:]
 				if len(list[ln:]) == 0 {
-					return result, warpError(ErrInvalidValue, list, string(path[index]))
+					return result, wrapError(ErrInvalidValue, list, string(path[index]))
 				}
 				return result, nil
 			default:
@@ -297,7 +297,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				for i := 0; i < ln; i++ {
 					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]))
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], "#"))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
 					if typ != Invalid {
 						list = append(list, raw...)
@@ -305,14 +305,14 @@ func GetE(value interface{}, path string) (Result, error) {
 				}
 				result.raw = list[ln:]
 				if len(list[ln:]) == 0 {
-					return result, warpError(ErrInvalidValue, list, "#")
+					return result, wrapError(ErrInvalidValue, list, "#")
 				}
 			default:
 				result.deployment = true
 				var err error
 				result.raw, result.typ, err = deployment(tp, tv)
 				if err != nil {
-					return result, warpError(err, value, "#")
+					return result, wrapError(err, value, "#")
 				}
 				result.diagnosis = append(result.diagnosis, err)
 			}
@@ -338,7 +338,7 @@ func GetE(value interface{}, path string) (Result, error) {
 						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv)
 					}
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], sv))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
 					}
 					if tp != Invalid {
 						list = append(list, value)
@@ -346,7 +346,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				}
 				result.raw = list[ln:]
 				if len(list[ln:]) == 0 {
-					return result, warpError(ErrInvalidValue, list, sv)
+					return result, wrapError(ErrInvalidValue, list, sv)
 				}
 
 			default:
@@ -360,10 +360,10 @@ func GetE(value interface{}, path string) (Result, error) {
 					nv, tpe, err = parseString(tp, tv, sv)
 				}
 				if err != nil {
-					return result, warpError(err, value, sv)
+					return result, wrapError(err, value, sv)
 				}
 				if tpe == Invalid {
-					return result, warpError(ErrInvalidValue, value, sv)
+					return result, wrapError(ErrInvalidValue, value, sv)
 				}
 				result.raw = nv
 				result.typ = tpe
@@ -379,7 +379,7 @@ func Get(value interface{}, path string) Result {
 		return Result{typ: Interface, raw: value}
 	}
 	if value == nil {
-		return Result{typ: Invalid, raw: value, diagnosis: []error{warpError(ErrInvalidValue, value, path)}}
+		return Result{typ: Invalid, raw: value, diagnosis: []error{wrapError(ErrInvalidValue, value, path)}}
 	}
 
 	var index int
@@ -392,7 +392,7 @@ func Get(value interface{}, path string) Result {
 	tv := reflect.ValueOf(value)
 
 	if !tv.IsValid() {
-		result.diagnosis = append(result.diagnosis, warpError(ErrInvalidValue, value, path))
+		result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, value, path))
 		return result
 	}
 
@@ -425,7 +425,7 @@ func Get(value interface{}, path string) Result {
 				for i := 0; i < ln; i++ {
 					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]))
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], "#"))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
 					if typ != Invalid {
 						list = append(list, raw...)
@@ -437,7 +437,7 @@ func Get(value interface{}, path string) Result {
 				var err error
 				result.raw, result.typ, err = deployment(tp, tv)
 				if err != nil {
-					result.diagnosis = append(result.diagnosis, warpError(err, value, "#"))
+					result.diagnosis = append(result.diagnosis, wrapError(err, value, "#"))
 				}
 			}
 
@@ -462,7 +462,7 @@ func Get(value interface{}, path string) Result {
 						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv)
 					}
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], sv))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
 					}
 					if tp != Invalid {
 						list = append(list, value)
@@ -480,7 +480,7 @@ func Get(value interface{}, path string) Result {
 					nv, tpe, err = parseString(tp, tv, sv)
 				}
 				if err != nil {
-					result.diagnosis = append(result.diagnosis, warpError(err, value, sv))
+					result.diagnosis = append(result.diagnosis, wrapError(err, value, sv))
 				}
 				result.raw = nv
 				result.typ = tpe
@@ -745,8 +745,8 @@ func validIdentifier(path string, limit int) bool {
 	return true
 }
 
-func warpError(err error, object interface{}, path string) error {
-	return fmt.Errorf("object:%v,path:%s,err: %w", object, path, err)
+func wrapError(err error, object interface{}, path string) error {
+	return fmt.Errorf("object:(%T),path:%s,err: %w", object, path, err)
 }
 
 func min(a, b int) int {
