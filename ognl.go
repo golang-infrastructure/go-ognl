@@ -204,7 +204,7 @@ func (r Result) Get(path string) Result {
 			}
 			nr.diagnosis = append(nr.diagnosis, next.diagnosis...)
 		}
-		nr.raw = list[ln:]
+		nr.raw = append([]interface{}(nil), list[ln:]...)
 		return nr
 	}
 	return Get(r.raw, path)
@@ -225,7 +225,7 @@ func (r Result) GetE(path string) (Result, error) {
 			}
 			nr.diagnosis = append(nr.diagnosis, next.diagnosis...)
 		}
-		nr.raw = list[ln:]
+		nr.raw = append([]interface{}(nil), list[ln:]...)
 		if len(list[ln:]) == 0 {
 			return nr, warpError(ErrInvalidValue, list, path)
 		}
@@ -279,7 +279,7 @@ func GetE(value interface{}, path string) (Result, error) {
 
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
 				}
-				result.raw = list[ln:]
+				result.raw = append([]interface{}(nil), list[ln:]...)
 				if len(list[ln:]) == 0 {
 					return result, warpError(ErrInvalidValue, list, string(path[index]))
 				}
@@ -303,7 +303,7 @@ func GetE(value interface{}, path string) (Result, error) {
 						list = append(list, raw...)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = append([]interface{}(nil), list[ln:]...)
 				if len(list[ln:]) == 0 {
 					return result, warpError(ErrInvalidValue, list, "#")
 				}
@@ -344,7 +344,7 @@ func GetE(value interface{}, path string) (Result, error) {
 						list = append(list, value)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = append([]interface{}(nil), list[ln:]...)
 				if len(list[ln:]) == 0 {
 					return result, warpError(ErrInvalidValue, list, sv)
 				}
@@ -410,7 +410,7 @@ func Get(value interface{}, path string) Result {
 					}
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
 				}
-				result.raw = list[ln:]
+				result.raw = append([]interface{}(nil), list[ln:]...)
 				return result
 			default:
 				return Get(result.raw, path[index+1:])
@@ -431,7 +431,7 @@ func Get(value interface{}, path string) Result {
 						list = append(list, raw...)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = append([]interface{}(nil), list[ln:]...)
 			default:
 				result.deployment = true
 				var err error
@@ -468,7 +468,7 @@ func Get(value interface{}, path string) Result {
 						list = append(list, value)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = append([]interface{}(nil), list[ln:]...)
 			default:
 				var (
 					nv  interface{}
