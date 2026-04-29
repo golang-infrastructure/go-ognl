@@ -97,7 +97,7 @@ func TestGet(t *testing.T) {
 
 		{"#", []interface{}{"t1", 1, hash1, hash2, list, array, "lt1", 11, hash1, hash2, list, array}, true},
 		{"#string1#", []interface{}{"string", "string"}, true},
-		{"List#1.Name", []interface{}{"t3", "t3", "t3", "t3"}, true},
+		{"List#.Name", []interface{}{"t2", "t3", "t4"}, true},
 	}
 	for index, v := range test {
 		vv := Get(t1, v.query)

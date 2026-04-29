@@ -310,7 +310,7 @@ func GetE(value interface{}, path string) (Result, error) {
 			default:
 				result.deployment = true
 				var err error
-				result.raw, result.typ, err = deployment(tp, tv)
+				result.raw, result.typ, err = deployment(reflect.TypeOf(result.raw), reflect.ValueOf(result.raw))
 				if err != nil {
 					return result, warpError(err, value, "#")
 				}
@@ -435,7 +435,7 @@ func Get(value interface{}, path string) Result {
 			default:
 				result.deployment = true
 				var err error
-				result.raw, result.typ, err = deployment(tp, tv)
+				result.raw, result.typ, err = deployment(reflect.TypeOf(result.raw), reflect.ValueOf(result.raw))
 				if err != nil {
 					result.diagnosis = append(result.diagnosis, warpError(err, value, "#"))
 				}
