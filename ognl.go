@@ -749,9 +749,3 @@ func warpError(err error, object interface{}, path string) error {
 	return fmt.Errorf("object:%v,path:%s,err: %w", object, path, err)
 }
 
-func min(a, b int) int {
-	if a > b {
-		return b
-	}
-	return a
-}
