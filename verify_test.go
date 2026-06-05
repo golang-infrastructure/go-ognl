@@ -232,6 +232,20 @@ func TestP0_4_InterfacePtrNoPanic(t *testing.T) {
 	assert.Equal(t, 20, Get(&y, "1").Value())
 }
 
+// GetE's '#' branch set deployment=true but, on a deployment error (e.g. a
+// scalar that cannot be expanded), returned before writing raw back to a
+// []interface{} — so Effective()/Values()/Get() panicked on the type assertion.
+func TestGetE_ScalarHash_NoPanic(t *testing.T) {
+	r, err := GetE(42, "#")
+	assert.Error(t, err) // a scalar cannot be expanded
+
+	assert.NotPanics(t, func() {
+		_ = r.Effective()
+		_ = r.Values()
+		_ = r.Get("x")
+	})
+}
+
 // ---- Coverage for previously-untested public API ----
 
 func TestCoverage_GetMany(t *testing.T) {

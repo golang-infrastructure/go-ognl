@@ -407,13 +407,17 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 			default:
 				result.deployment = true
 				// Expand the value we have descended to (result.raw), not the
-				// stale entry value captured in tp/tv.
+				// stale entry value captured in tp/tv. Write raw/typ back BEFORE
+				// the error check so the deployed Result is always consistent
+				// (raw is a []interface{}) — otherwise Effective()/Values() would
+				// panic on the type assertion when deployment fails (e.g. on a
+				// scalar "#").
 				src := result.raw
 				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src), 0)
+				result.raw, result.typ = raw, typ
 				if err != nil {
 					return result, wrapError(err, src, "#")
 				}
-				result.raw, result.typ = raw, typ
 			}
 
 		default:
