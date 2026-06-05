@@ -8,12 +8,9 @@ package ognl
 import (
 	"errors"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,17 +123,26 @@ func TestP0_5_ResultGet_Concurrent(t *testing.T) {
 }
 
 func TestP0_5_ResultGet_NoSequentialCorruption(t *testing.T) {
-	value := []map[string]interface{}{{"k": 1}, {"k": 2}, {"k": 3}}
-	r := Get(value, "#")
+	// White-box: force spare capacity in the deployed Result so the OLD
+	// shared-backing append would write into the same array and the second
+	// call would clobber the first call's returned slice. Querying *different*
+	// keys makes the corruption observable (without spare cap, append reallocs
+	// and the bug hides — which is why the naive version of this test passed
+	// even against the buggy code).
+	big := make([]interface{}, 3, 64)
+	big[0] = map[string]interface{}{"k": 1, "j": 10}
+	big[1] = map[string]interface{}{"k": 2, "j": 20}
+	big[2] = map[string]interface{}{"k": 3, "j": 30}
+	r := Result{deployment: true, raw: big, typ: Interface}
 
 	a := r.Get("k")
-	assert.Equal(t, []interface{}{1, 2, 3}, a.Values())
+	require.Equal(t, []interface{}{1, 2, 3}, a.Values())
 
-	b := r.Get("k")
-	assert.Equal(t, []interface{}{1, 2, 3}, b.Values())
+	b := r.Get("j")
+	require.Equal(t, []interface{}{10, 20, 30}, b.Values())
 
-	// a must be unchanged after b ran on the same Result.
-	assert.Equal(t, []interface{}{1, 2, 3}, a.Values())
+	// With the old list[ln:] aliasing, b's appends overwrite a's slice in place.
+	assert.Equal(t, []interface{}{1, 2, 3}, a.Values(), "a must be unaffected by b")
 }
 
 // P1-1: error messages used to embed the whole object via %v, leaking secrets.
@@ -167,28 +173,63 @@ func TestP1_2_GetEHash_NoNilDiagnosis(t *testing.T) {
 	}
 }
 
-// P1-3: list[ln:] re-slicing kept the consumed inputs alive via the shared
-// backing array; cloneTail severs that so they can be collected.
-func TestP1_3_NoResliceRetention(t *testing.T) {
-	var collected int64
+// P1-3: list[ln:] re-slicing kept the consumed prefix alive via the shared
+// backing array; cloneTail copies the tail into a fresh array so the prefix can
+// be collected. Tested deterministically against cloneTail directly (a
+// finalizer/GC test would be flaky and, worse, would not even exercise this
+// function).
+func TestP1_3_CloneTailCopiesAndPreservesNilEmpty(t *testing.T) {
+	list := make([]interface{}, 0, 16)
+	list = append(list, "a", "b", "c", "d", "e")
 
-	tail := func() Result {
-		const n = 50
-		items := make([]*[4096]byte, n)
-		for i := range items {
-			items[i] = &[4096]byte{}
-			runtime.SetFinalizer(items[i], func(*[4096]byte) { atomic.AddInt64(&collected, 1) })
-		}
-		r := Get(items, "#")        // deploy -> raw holds all n pointers
-		return r.Get("NonExistent") // empty result; must not retain items
-	}()
-	_ = tail
+	out := cloneTail(list, 2)
+	require.Equal(t, []interface{}{"c", "d", "e"}, out)
 
-	for i := 0; i < 50 && atomic.LoadInt64(&collected) < 50; i++ {
-		runtime.GC()
-		time.Sleep(10 * time.Millisecond)
-	}
-	assert.Equal(t, int64(50), atomic.LoadInt64(&collected), "consumed inputs must be collectable")
+	// Must be a copy, not an alias of list's backing array.
+	list[2] = "MUT"
+	assert.Equal(t, "c", out[0], "cloneTail must copy, not re-slice")
+	// And carry no leftover capacity from the (larger) source backing array.
+	assert.Equal(t, len(out), cap(out))
+
+	// nil vs empty-slice distinction preserved.
+	assert.Nil(t, cloneTail(nil, 0))
+	assert.NotNil(t, cloneTail([]interface{}{}, 0))
+	assert.Len(t, cloneTail([]interface{}{"x"}, 1), 0)
+}
+
+// P0-1 (round 2): the deployment-mode separator branch recursed once per "#."
+// transition, driven by path length — a path-only stack-overflow DoS reachable
+// with a 1-element cyclic input. Now depth-bounded.
+func TestP0_1_DeploymentSeparatorBounded(t *testing.T) {
+	outer := make([]interface{}, 1)
+	outer[0] = outer // cycle
+	// Enough "#." pairs to overflow the 1 GB stack if the recursion were
+	// unbounded; with the depth cap it returns after maxResolveDepth levels.
+	path := strings.Repeat("#.", 1_000_000) + "x"
+
+	// Before the fix this recursed once per "#." and crashed the process with a
+	// fatal (uncatchable) stack overflow. Reaching the end of this test is the
+	// regression check: the depth bound caps recursion regardless of path length.
+	_ = Get(outer, path)
+	_, _ = GetE(outer, path)
+}
+
+// deployment() pointer/interface deref had no depth bound: a self-referential
+// interface looped forever. Now bounded.
+func TestP0_1_DeploymentInterfaceCycleBounded(t *testing.T) {
+	var x interface{}
+	x = &x // self-referential interface
+	assert.False(t, Get(x, "#").Effective())
+}
+
+// parseString/parseInt dereferenced via t.Elem(), which panics on interface
+// types. A pointer-to-interface value used to crash; now it resolves.
+func TestP0_4_InterfacePtrNoPanic(t *testing.T) {
+	var x interface{} = map[string]int{"a": 1}
+	assert.Equal(t, 1, Get(&x, "a").Value())
+
+	var y interface{} = []int{10, 20, 30}
+	assert.Equal(t, 20, Get(&y, "1").Value())
 }
 
 // ---- Coverage for previously-untested public API ----

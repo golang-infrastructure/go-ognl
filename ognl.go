@@ -148,8 +148,9 @@ func (t Type) String() string {
 // Diagnosis, and descend further with Get/GetE (chaining). The zero value is an
 // invalid Result.
 type Result struct {
-	// typ is the value's Type. When the path used '#', the Result is expanded
-	// and typ is fixed to Interface while raw is a []interface{}.
+	// typ is the value's Type. When the path used '#', the Result is expanded:
+	// raw is a []interface{} and typ reflects the element kind reported by
+	// deployment (often Interface, e.g. for map[string]interface{}).
 	typ Type
 
 	// raw is the resolved value. When expanded (see deployment) it is a
@@ -204,7 +205,7 @@ func (r Result) Values() []interface{} {
 		return r.raw.([]interface{})
 	}
 
-	v, t, _ := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw))
+	v, t, _ := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw), 0)
 	if t == Invalid {
 		return []interface{}{r.raw}
 	}
@@ -222,7 +223,7 @@ func (r Result) ValuesE() ([]interface{}, error) {
 		return r.raw.([]interface{}), nil
 	}
 
-	v, t, err := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw))
+	v, t, err := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw), 0)
 	if err != nil {
 		return nil, wrapError(err, r.raw, "")
 	}
@@ -309,6 +310,13 @@ func Parse(result interface{}) Result {
 // error describing the first fatal failure (it is the error-returning form of
 // Get). See the package doc for the path syntax.
 func GetE(value interface{}, path string) (Result, error) {
+	return getE(value, path, 0)
+}
+
+func getE(value interface{}, path string, depth int) (Result, error) {
+	if depth > maxResolveDepth {
+		return Result{typ: Invalid, raw: value}, wrapError(ErrInvalidStructure, value, path)
+	}
 	if value == nil && (len(path) == 0 || validIdentifier(path, 0)) {
 		return Result{typ: Interface, raw: value}, nil
 	}
@@ -339,7 +347,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				list := result.raw.([]interface{})
 				ln := len(list)
 				for i := 0; i < ln; i++ {
-					next, err := GetE(list[i], path[index+1:])
+					next, err := getE(list[i], path[index+1:], depth+1)
 					if err != nil {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], path[index+1:]))
 					}
@@ -384,7 +392,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				list := result.raw.([]interface{})
 				ln := len(list)
 				for i := 0; i < ln; i++ {
-					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]))
+					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0)
 					if err != nil {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
@@ -401,7 +409,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				// Expand the value we have descended to (result.raw), not the
 				// stale entry value captured in tp/tv.
 				src := result.raw
-				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src))
+				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src), 0)
 				if err != nil {
 					return result, wrapError(err, src, "#")
 				}
@@ -465,11 +473,19 @@ func GetE(value interface{}, path string) (Result, error) {
 	return result, nil
 }
 
-// Get resolves path against value and returns the Result. It never returns an
-// error or panics on malformed input; non-fatal problems are recorded in
-// Result.Diagnosis and an unresolved path yields a Result whose Effective
-// reports false. See the package doc for the path syntax.
+// Get resolves path against value and returns the Result. It does not return an
+// error: an unresolved path yields a Result whose Effective reports false, and
+// non-fatal problems are recorded in Result.Diagnosis. Path length is bounded,
+// so adversarial paths cannot exhaust the stack. See the package doc for the
+// path syntax.
 func Get(value interface{}, path string) Result {
+	return get(value, path, 0)
+}
+
+func get(value interface{}, path string, depth int) Result {
+	if depth > maxResolveDepth {
+		return Result{typ: Invalid, raw: value, diagnosis: []error{wrapError(ErrInvalidStructure, value, path)}}
+	}
 	if value == nil && (len(path) == 0 || validIdentifier(path, 0)) {
 		return Result{typ: Interface, raw: value}
 	}
@@ -499,7 +515,7 @@ func Get(value interface{}, path string) Result {
 				list := result.raw.([]interface{})
 				ln := len(list)
 				for i := 0; i < ln; i++ {
-					next := Get(list[i], path[index+1:])
+					next := get(list[i], path[index+1:], depth+1)
 					if next.typ != Invalid {
 						list = append(list, next.raw)
 					}
@@ -535,7 +551,7 @@ func Get(value interface{}, path string) Result {
 				list := result.raw.([]interface{})
 				ln := len(list)
 				for i := 0; i < ln; i++ {
-					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]))
+					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0)
 					if err != nil {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
@@ -548,7 +564,7 @@ func Get(value interface{}, path string) Result {
 				result.deployment = true
 				// Expand result.raw, not the stale entry value in tp/tv.
 				src := result.raw
-				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src))
+				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src), 0)
 				if err != nil {
 					result.diagnosis = append(result.diagnosis, wrapError(err, src, "#"))
 				}
@@ -649,11 +665,13 @@ func GetMany(value interface{}, path ...string) []Result {
 	return results
 }
 
-// maxResolveDepth bounds the recursion in parseString/parseInt. Pointer
-// dereferencing and anonymous-field promotion both recurse, so a self-cyclic
-// embedded pointer (e.g. an anonymous *T field pointing at itself) would
-// otherwise recurse forever and hit an unrecoverable fatal "stack overflow".
-// The cap turns that into a graceful Invalid result.
+// maxResolveDepth bounds every recursive descent in this package: parseString
+// and parseInt (pointer deref + anonymous-field promotion), deployment (pointer
+// /interface deref), and the get/getE expansion of "#." segments. Cyclic data
+// (a self-pointing embedded field, a self-referential interface) or an
+// adversarial "#.#.#..." path would otherwise recurse forever and hit an
+// unrecoverable fatal "stack overflow". Past the cap the walk stops with an
+// Invalid result / error instead of crashing.
 const maxResolveDepth = 1000
 
 func parseString(t reflect.Type, v reflect.Value, value string, depth int) (interface{}, Type, error) {
@@ -671,7 +689,11 @@ func parseString(t reflect.Type, v reflect.Value, value string, depth int) (inte
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseString(t.Elem(), v.Elem(), value, depth+1)
+		// Derive the type from the dereferenced value, not t.Elem(): for an
+		// interface kind t.Elem() panics, whereas v.Elem().Type() yields the
+		// concrete dynamic type.
+		ev := v.Elem()
+		return parseString(ev.Type(), ev, value, depth+1)
 
 	case reflect.Map:
 		// MUST map key is string
@@ -739,7 +761,8 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (inter
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseInt(t.Elem(), v.Elem(), tokenValue, depth+1)
+		ev := v.Elem()
+		return parseInt(ev.Type(), ev, tokenValue, depth+1)
 	case reflect.Map:
 		// MUST map key is int
 		if t.Key().Kind() != reflect.Int {
@@ -801,7 +824,10 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (inter
 	}
 }
 
-func deployment(t reflect.Type, v reflect.Value) ([]interface{}, Type, error) {
+func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type, error) {
+	if depth > maxResolveDepth {
+		return nil, Invalid, ErrUnableExpand
+	}
 	if !v.IsValid() {
 		return nil, Invalid, nil
 	}
@@ -814,7 +840,7 @@ func deployment(t reflect.Type, v reflect.Value) ([]interface{}, Type, error) {
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return deployment(t, v.Elem())
+		return deployment(t, v.Elem(), depth+1)
 
 	case reflect.Map:
 		var ret []interface{}
