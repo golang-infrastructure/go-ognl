@@ -97,7 +97,11 @@ func TestGet(t *testing.T) {
 
 		{"#", []interface{}{"t1", 1, hash1, hash2, list, array, "lt1", 11, hash1, hash2, list, array}, true},
 		{"#string1#", []interface{}{"string", "string"}, true},
-		{"List#1.Name", []interface{}{"t3", "t3", "t3", "t3"}, true},
+		// NOTE: this used to be {"List#1.Name", [4×"t3"]}, which only "worked"
+		// because the buggy '#' expanded the root t1 instead of the List slice.
+		// After the P0-3 fix, "List#" correctly expands List into [t2 t3 t4] and
+		// "#.Name" maps Name over each element.
+		{"List#.Name", []interface{}{"t2", "t3", "t4"}, true},
 	}
 	for index, v := range test {
 		vv := Get(t1, v.query)
