@@ -1,3 +1,25 @@
+// Package ognl extracts values from arbitrary Go object graphs using a string
+// path expression, in the spirit of OGNL. It traverses structs, maps, slices,
+// arrays, pointers and interfaces via reflection, without the caller having to
+// know the concrete types in advance, and can read unexported fields.
+//
+// Path syntax:
+//
+//   - "." separates path segments: "A.B.C".
+//   - A segment is a map key, a struct field name, or a numeric index. A
+//     non-negative integer indexes a slice/array element, a map keyed by int,
+//     or a struct field by position; anything else is a string map key or a
+//     struct field name.
+//   - "#" expands the current value into a list: subsequent segments are then
+//     applied to every element (similar to flat-map). "##" expands twice.
+//   - Use "\\" to escape a literal "." inside a key, e.g. "Foo\\.Bar".
+//
+// Concurrency: Get/GetE and the methods on a Result do not mutate their inputs
+// and are safe to call concurrently on the same object or Result, as long as
+// the underlying object is not being mutated elsewhere.
+//
+// Note: traversal relies on reflection (and unsafe, to read unexported fields),
+// so it is slower than hand-written field access.
 package ognl
 
 import (
@@ -26,7 +48,10 @@ var ErrUnableExpand = errors.New("unable to expand")
 
 var ErrInvalidValue = errors.New("invalid value")
 
-// Type is Result type
+// Type classifies a Result's value. Its constants are declared in the same
+// order as the reflect.Kind constants, so Type(v.Kind()) is a safe conversion
+// that preserves the integer value (a test locks this invariant). Use the
+// Result.Type accessor rather than relying on the underlying integer.
 type Type int
 
 const (
@@ -118,20 +143,30 @@ func (t Type) String() string {
 	}
 }
 
+// Result holds the value a path resolved to. Obtain one from Get/GetE/Parse,
+// inspect it with Value/Values/Type/Effective, collect non-fatal errors with
+// Diagnosis, and descend further with Get/GetE (chaining). The zero value is an
+// invalid Result.
 type Result struct {
-	// 如果解析使用了 '#' 则 typ 固定为 interface{} raw 为[]interface{}
+	// typ is the value's Type. When the path used '#', the Result is expanded
+	// and typ is fixed to Interface while raw is a []interface{}.
 	typ Type
 
-	// 是否展开为数组,如果是数组,Raw应该是[]interface{}
+	// raw is the resolved value. When expanded (see deployment) it is a
+	// []interface{} of the collected elements.
 	raw interface{}
 
-	// 判断是否展开
+	// deployment reports whether this Result is an expanded list (via '#').
 	deployment bool
 
-	// 收集一些解析过程中的错误,不影响返回值
+	// diagnosis collects non-fatal errors encountered while traversing; it does
+	// not affect the returned value.
 	diagnosis []error
 }
 
+// Effective reports whether the Result carries a usable value: its Type is not
+// Invalid, and (for an expanded Result) the list is non-empty, or (otherwise)
+// the value is non-nil.
 func (r Result) Effective() bool {
 	if r.Type() == Invalid {
 		return false
@@ -145,14 +180,21 @@ func (r Result) Effective() bool {
 	return r.raw != nil
 }
 
+// Type returns the value's Type (Invalid if nothing was resolved).
 func (r Result) Type() Type {
 	return r.typ
 }
 
+// Value returns the resolved value as-is. For an expanded Result (via '#') it
+// is a []interface{}; otherwise it is the single resolved value (possibly nil).
 func (r Result) Value() interface{} {
 	return r.raw
 }
 
+// Values returns the value as a slice: an expanded Result's elements directly,
+// an expandable single value (slice/array/map/struct) expanded, or otherwise a
+// one-element slice holding the value. Expansion errors are ignored; use
+// ValuesE to observe them.
 func (r Result) Values() []interface{} {
 
 	if r.deployment {
@@ -169,6 +211,8 @@ func (r Result) Values() []interface{} {
 	return v
 }
 
+// ValuesE is the error-returning form of Values: it reports an error when a
+// single value could not be expanded.
 func (r Result) ValuesE() ([]interface{}, error) {
 
 	if r.deployment {
@@ -180,7 +224,7 @@ func (r Result) ValuesE() ([]interface{}, error) {
 
 	v, t, err := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw))
 	if err != nil {
-		return nil, warpError(err, r.raw, "")
+		return nil, wrapError(err, r.raw, "")
 	}
 	if t == Invalid {
 		return []interface{}{r.raw}, nil
@@ -188,62 +232,88 @@ func (r Result) ValuesE() ([]interface{}, error) {
 	return v, nil
 }
 
+// Diagnosis returns the non-fatal errors collected while traversing. Each is
+// wrapped with %w, so errors.Is works against the package's sentinel errors.
 func (r Result) Diagnosis() []error {
 	return r.diagnosis
 }
 
+// Get applies path to a Result. When the Result is an expanded list (created
+// via '#'), path is applied to every element and the matching results are
+// collected. It is safe to call Get repeatedly, and concurrently, on the same
+// Result: each call allocates its own backing slice and never mutates r.
 func (r Result) Get(path string) Result {
 	if r.deployment {
 		nr := r
-		list := nr.raw.([]interface{})
-		ln := len(list)
-		for i := 0; i < ln; i++ {
-			next := Get(list[i], path)
+		src, _ := r.raw.([]interface{})
+		out := make([]interface{}, 0, len(src))
+		diag := append([]error(nil), r.diagnosis...)
+		for _, item := range src {
+			next := Get(item, path)
 			if next.typ != Invalid {
-				list = append(list, next.raw)
+				out = append(out, next.raw)
 			}
-			nr.diagnosis = append(nr.diagnosis, next.diagnosis...)
+			diag = append(diag, next.diagnosis...)
 		}
-		nr.raw = list[ln:]
+		// Preserve the nil vs empty-slice distinction of the original raw so
+		// Value()/Values() stay observationally identical.
+		if len(out) == 0 && src == nil {
+			out = nil
+		}
+		nr.raw = out
+		nr.diagnosis = diag
 		return nr
 	}
 	return Get(r.raw, path)
 }
 
+// GetE is the error-returning form of Get. On an expanded Result it returns an
+// error only when no element matched path. Like Get, it never mutates r and is
+// safe to call concurrently.
 func (r Result) GetE(path string) (Result, error) {
 	if r.deployment {
 		nr := r
-		list := nr.raw.([]interface{})
-		ln := len(list)
-		for i := 0; i < ln; i++ {
-			next, err := GetE(list[i], path)
+		src, _ := r.raw.([]interface{})
+		out := make([]interface{}, 0, len(src))
+		diag := append([]error(nil), r.diagnosis...)
+		for _, item := range src {
+			next, err := GetE(item, path)
 			if err != nil {
-				nr.diagnosis = append(nr.diagnosis, warpError(err, list[i], path))
+				diag = append(diag, wrapError(err, item, path))
 			}
 			if next.typ != Invalid {
-				list = append(list, next.raw)
+				out = append(out, next.raw)
 			}
-			nr.diagnosis = append(nr.diagnosis, next.diagnosis...)
+			diag = append(diag, next.diagnosis...)
 		}
-		nr.raw = list[ln:]
-		if len(list[ln:]) == 0 {
-			return nr, warpError(ErrInvalidValue, list, path)
+		if len(out) == 0 && src == nil {
+			out = nil
+		}
+		nr.raw = out
+		nr.diagnosis = diag
+		if len(out) == 0 {
+			return nr, wrapError(ErrInvalidValue, src, path)
 		}
 		return nr, nil
 	}
 	return GetE(r.raw, path)
 }
 
+// Parse wraps a value in a Result without navigating into it, so paths can be
+// applied later via Result.Get/GetE. Parse(v) is equivalent to Get(v, "").
 func Parse(result interface{}) Result {
 	return Get(result, "")
 }
 
+// GetE resolves path against value and returns the Result together with an
+// error describing the first fatal failure (it is the error-returning form of
+// Get). See the package doc for the path syntax.
 func GetE(value interface{}, path string) (Result, error) {
 	if value == nil && (len(path) == 0 || validIdentifier(path, 0)) {
 		return Result{typ: Interface, raw: value}, nil
 	}
 	if value == nil {
-		return Result{typ: Invalid, raw: value}, warpError(ErrInvalidValue, value, path)
+		return Result{typ: Invalid, raw: value}, wrapError(ErrInvalidValue, value, path)
 	}
 
 	var (
@@ -258,7 +328,7 @@ func GetE(value interface{}, path string) (Result, error) {
 
 	if !tv.IsValid() {
 		result.typ = Invalid
-		return result, warpError(ErrInvalidValue, value, path)
+		return result, wrapError(ErrInvalidValue, value, path)
 	}
 
 	for ; index < len(path); index++ {
@@ -271,7 +341,7 @@ func GetE(value interface{}, path string) (Result, error) {
 				for i := 0; i < ln; i++ {
 					next, err := GetE(list[i], path[index+1:])
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], path[index+1:]))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], path[index+1:]))
 					}
 					if next.typ != Invalid {
 						list = append(list, next.raw)
@@ -279,13 +349,32 @@ func GetE(value interface{}, path string) (Result, error) {
 
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
 				}
-				result.raw = list[ln:]
+				result.raw = cloneTail(list, ln)
 				if len(list[ln:]) == 0 {
-					return result, warpError(ErrInvalidValue, list, string(path[index]))
+					return result, wrapError(ErrInvalidValue, list, string(path[index]))
 				}
 				return result, nil
 			default:
-				return GetE(result.raw, path[index+1:])
+				// Iterative descent (no recursion): a separator just re-bases
+				// tp/tv on the current value and lets the loop continue. This
+				// keeps stack depth O(1) in the number of separators, so a path
+				// with millions of '.' (or a self-referential "Mid.Mid.Mid..."
+				// path) can no longer exhaust the goroutine stack.
+				if result.raw == nil {
+					if len(path[index+1:]) == 0 || validIdentifier(path[index+1:], 0) {
+						result.typ = Interface
+						continue
+					}
+					result.typ = Invalid
+					return result, wrapError(ErrInvalidValue, result.raw, path[index+1:])
+				}
+				tp = reflect.TypeOf(result.raw)
+				tv = reflect.ValueOf(result.raw)
+				if !tv.IsValid() {
+					result.typ = Invalid
+					return result, wrapError(ErrInvalidValue, result.raw, path[index+1:])
+				}
+				result.typ = Interface
 			}
 		case '#':
 			// 转化成slice 类型 平铺
@@ -297,24 +386,26 @@ func GetE(value interface{}, path string) (Result, error) {
 				for i := 0; i < ln; i++ {
 					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]))
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], "#"))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
 					if typ != Invalid {
 						list = append(list, raw...)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = cloneTail(list, ln)
 				if len(list[ln:]) == 0 {
-					return result, warpError(ErrInvalidValue, list, "#")
+					return result, wrapError(ErrInvalidValue, list, "#")
 				}
 			default:
 				result.deployment = true
-				var err error
-				result.raw, result.typ, err = deployment(tp, tv)
+				// Expand the value we have descended to (result.raw), not the
+				// stale entry value captured in tp/tv.
+				src := result.raw
+				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src))
 				if err != nil {
-					return result, warpError(err, value, "#")
+					return result, wrapError(err, src, "#")
 				}
-				result.diagnosis = append(result.diagnosis, err)
+				result.raw, result.typ = raw, typ
 			}
 
 		default:
@@ -333,20 +424,20 @@ func GetE(value interface{}, path string) (Result, error) {
 				ln := len(list)
 				for i := 0; i < ln; i++ {
 					if digit {
-						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v)
+						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v, 0)
 					} else {
-						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv)
+						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv, 0)
 					}
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], sv))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
 					}
 					if tp != Invalid {
 						list = append(list, value)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = cloneTail(list, ln)
 				if len(list[ln:]) == 0 {
-					return result, warpError(ErrInvalidValue, list, sv)
+					return result, wrapError(ErrInvalidValue, list, sv)
 				}
 
 			default:
@@ -355,15 +446,15 @@ func GetE(value interface{}, path string) (Result, error) {
 					tpe Type
 				)
 				if digit {
-					nv, tpe, err = parseInt(tp, tv, v)
+					nv, tpe, err = parseInt(tp, tv, v, 0)
 				} else {
-					nv, tpe, err = parseString(tp, tv, sv)
+					nv, tpe, err = parseString(tp, tv, sv, 0)
 				}
 				if err != nil {
-					return result, warpError(err, value, sv)
+					return result, wrapError(err, value, sv)
 				}
 				if tpe == Invalid {
-					return result, warpError(ErrInvalidValue, value, sv)
+					return result, wrapError(ErrInvalidValue, value, sv)
 				}
 				result.raw = nv
 				result.typ = tpe
@@ -374,12 +465,16 @@ func GetE(value interface{}, path string) (Result, error) {
 	return result, nil
 }
 
+// Get resolves path against value and returns the Result. It never returns an
+// error or panics on malformed input; non-fatal problems are recorded in
+// Result.Diagnosis and an unresolved path yields a Result whose Effective
+// reports false. See the package doc for the path syntax.
 func Get(value interface{}, path string) Result {
 	if value == nil && (len(path) == 0 || validIdentifier(path, 0)) {
 		return Result{typ: Interface, raw: value}
 	}
 	if value == nil {
-		return Result{typ: Invalid, raw: value, diagnosis: []error{warpError(ErrInvalidValue, value, path)}}
+		return Result{typ: Invalid, raw: value, diagnosis: []error{wrapError(ErrInvalidValue, value, path)}}
 	}
 
 	var index int
@@ -392,7 +487,7 @@ func Get(value interface{}, path string) Result {
 	tv := reflect.ValueOf(value)
 
 	if !tv.IsValid() {
-		result.diagnosis = append(result.diagnosis, warpError(ErrInvalidValue, value, path))
+		result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, value, path))
 		return result
 	}
 
@@ -410,10 +505,27 @@ func Get(value interface{}, path string) Result {
 					}
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
 				}
-				result.raw = list[ln:]
+				result.raw = cloneTail(list, ln)
 				return result
 			default:
-				return Get(result.raw, path[index+1:])
+				// Iterative descent; see the GetE counterpart for rationale.
+				if result.raw == nil {
+					if len(path[index+1:]) == 0 || validIdentifier(path[index+1:], 0) {
+						result.typ = Interface
+						continue
+					}
+					result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, result.raw, path[index+1:]))
+					result.typ = Invalid
+					return result
+				}
+				tp = reflect.TypeOf(result.raw)
+				tv = reflect.ValueOf(result.raw)
+				if !tv.IsValid() {
+					result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, result.raw, path[index+1:]))
+					result.typ = Invalid
+					return result
+				}
+				result.typ = Interface
 			}
 		case '#':
 			// 转化成slice 类型 平铺
@@ -425,20 +537,22 @@ func Get(value interface{}, path string) Result {
 				for i := 0; i < ln; i++ {
 					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]))
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], "#"))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
 					if typ != Invalid {
 						list = append(list, raw...)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = cloneTail(list, ln)
 			default:
 				result.deployment = true
-				var err error
-				result.raw, result.typ, err = deployment(tp, tv)
+				// Expand result.raw, not the stale entry value in tp/tv.
+				src := result.raw
+				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src))
 				if err != nil {
-					result.diagnosis = append(result.diagnosis, warpError(err, value, "#"))
+					result.diagnosis = append(result.diagnosis, wrapError(err, src, "#"))
 				}
+				result.raw, result.typ = raw, typ
 			}
 
 		default:
@@ -457,30 +571,30 @@ func Get(value interface{}, path string) Result {
 				ln := len(list)
 				for i := 0; i < ln; i++ {
 					if digit {
-						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v)
+						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v, 0)
 					} else {
-						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv)
+						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv, 0)
 					}
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, warpError(err, list[i], sv))
+						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
 					}
 					if tp != Invalid {
 						list = append(list, value)
 					}
 				}
-				result.raw = list[ln:]
+				result.raw = cloneTail(list, ln)
 			default:
 				var (
 					nv  interface{}
 					tpe Type
 				)
 				if digit {
-					nv, tpe, err = parseInt(tp, tv, v)
+					nv, tpe, err = parseInt(tp, tv, v, 0)
 				} else {
-					nv, tpe, err = parseString(tp, tv, sv)
+					nv, tpe, err = parseString(tp, tv, sv, 0)
 				}
 				if err != nil {
-					result.diagnosis = append(result.diagnosis, warpError(err, value, sv))
+					result.diagnosis = append(result.diagnosis, wrapError(err, value, sv))
 				}
 				result.raw = nv
 				result.typ = tpe
@@ -525,6 +639,8 @@ loop:
 	return string(key), index
 }
 
+// GetMany resolves several paths against the same value and returns one Result
+// per path, in order.
 func GetMany(value interface{}, path ...string) []Result {
 	results := make([]Result, 0, len(path))
 	for _, s := range path {
@@ -533,7 +649,17 @@ func GetMany(value interface{}, path ...string) []Result {
 	return results
 }
 
-func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Type, error) {
+// maxResolveDepth bounds the recursion in parseString/parseInt. Pointer
+// dereferencing and anonymous-field promotion both recurse, so a self-cyclic
+// embedded pointer (e.g. an anonymous *T field pointing at itself) would
+// otherwise recurse forever and hit an unrecoverable fatal "stack overflow".
+// The cap turns that into a graceful Invalid result.
+const maxResolveDepth = 1000
+
+func parseString(t reflect.Type, v reflect.Value, value string, depth int) (interface{}, Type, error) {
+	if depth > maxResolveDepth {
+		return nil, Invalid, ErrInvalidStructure
+	}
 	if !v.IsValid() {
 		return nil, Invalid, nil
 	}
@@ -545,7 +671,7 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseString(t.Elem(), v.Elem(), value)
+		return parseString(t.Elem(), v.Elem(), value, depth+1)
 
 	case reflect.Map:
 		// MUST map key is string
@@ -553,12 +679,19 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 			return nil, Invalid, ErrMapKeyMustString
 		}
 
-		value := v.MapIndex(reflect.ValueOf(value))
-		if !value.IsValid() {
+		// Convert the lookup key to the map's actual key type. A defined key
+		// type (type K string) has Kind String but is not assignable from a
+		// plain string, which would make MapIndex panic.
+		key := reflect.ValueOf(value)
+		if key.Type() != t.Key() {
+			key = key.Convert(t.Key())
+		}
+		mv := v.MapIndex(key)
+		if !mv.IsValid() {
 			return nil, Invalid, nil
 		}
 
-		return value.Interface(), Type(value.Kind()), nil
+		return mv.Interface(), Type(mv.Kind()), nil
 
 	case reflect.Slice, reflect.Array:
 		return nil, Invalid, ErrSliceSubscript
@@ -578,7 +711,7 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 		rt, _ := t.FieldByName(value)
 
 		if rt.Anonymous {
-			nv, nt, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value)
+			nv, nt, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value, depth+1)
 			if ne == nil && nt != Invalid {
 				return nv, nt, ne
 			}
@@ -591,7 +724,10 @@ func parseString(t reflect.Type, v reflect.Value, value string) (interface{}, Ty
 	}
 }
 
-func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Type, error) {
+func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (interface{}, Type, error) {
+	if depth > maxResolveDepth {
+		return nil, Invalid, ErrParseInt
+	}
 	if !v.IsValid() {
 		return nil, Invalid, nil
 	}
@@ -603,19 +739,24 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return parseInt(t.Elem(), v.Elem(), tokenValue)
+		return parseInt(t.Elem(), v.Elem(), tokenValue, depth+1)
 	case reflect.Map:
 		// MUST map key is int
 		if t.Key().Kind() != reflect.Int {
 			return nil, Invalid, ErrMapKeyMustInt
 		}
 
-		value := v.MapIndex(reflect.ValueOf(tokenValue))
-		if !value.IsValid() {
+		// Convert to the map's actual key type (handles type K int).
+		key := reflect.ValueOf(tokenValue)
+		if key.Type() != t.Key() {
+			key = key.Convert(t.Key())
+		}
+		mv := v.MapIndex(key)
+		if !mv.IsValid() {
 			return nil, Invalid, nil
 		}
 
-		return value.Interface(), Type(value.Kind()), nil
+		return mv.Interface(), Type(mv.Kind()), nil
 
 	case reflect.Slice, reflect.Array:
 		if tokenValue < 0 || tokenValue >= v.Len() {
@@ -647,7 +788,7 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int) (interface{}, Typ
 		rt := t.Field(tokenValue)
 
 		if rt.Anonymous {
-			nv, nt, ne := parseInt(reflect.TypeOf(res), reflect.ValueOf(res), tokenValue)
+			nv, nt, ne := parseInt(reflect.TypeOf(res), reflect.ValueOf(res), tokenValue, depth+1)
 			if ne == nil && nt != Invalid {
 				return nv, nt, ne
 			}
@@ -745,13 +886,29 @@ func validIdentifier(path string, limit int) bool {
 	return true
 }
 
-func warpError(err error, object interface{}, path string) error {
-	return fmt.Errorf("object:%v,path:%s,err: %w", object, path, err)
+// wrapError annotates err with the path and the *type* of the object being
+// traversed. The object's value is deliberately NOT included: this library
+// walks arbitrary caller objects that routinely hold credentials or PII, and
+// embedding the value (e.g. via %v) would leak secrets into error strings and
+// the Diagnosis list. The sentinel is wrapped with %w so errors.Is still works.
+func wrapError(err error, object interface{}, path string) error {
+	return fmt.Errorf("type:%T,path:%s: %w", object, path, err)
 }
 
-func min(a, b int) int {
-	if a > b {
-		return b
+// cloneTail returns a fresh slice holding list[ln:]. Re-slicing (list[ln:])
+// would keep the whole backing array alive — including the ln consumed
+// elements — for the lifetime of the Result; copying severs that reference so
+// the consumed inputs can be garbage-collected. The nil vs empty distinction of
+// the original is preserved so Value()/Values() stay observationally identical.
+func cloneTail(list []interface{}, ln int) []interface{} {
+	n := len(list) - ln
+	if n <= 0 {
+		if list == nil {
+			return nil
+		}
+		return []interface{}{}
 	}
-	return a
+	out := make([]interface{}, n)
+	copy(out, list[ln:])
+	return out
 }
