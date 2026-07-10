@@ -38,6 +38,7 @@ func TestIssue33ActualFailureObjectType(t *testing.T) {
 		offset    uint64
 		operation uint64
 		sentinel  error
+		diagnosed bool
 	}{
 		{
 			name:      "resolved slice",
@@ -47,6 +48,7 @@ func TestIssue33ActualFailureObjectType(t *testing.T) {
 			offset:    4,
 			operation: 2,
 			sentinel:  ErrSliceSubscript,
+			diagnosed: true,
 		},
 		{
 			name:      "untyped nil",
@@ -56,6 +58,7 @@ func TestIssue33ActualFailureObjectType(t *testing.T) {
 			offset:    2,
 			operation: 1,
 			sentinel:  ErrInvalidValue,
+			diagnosed: true,
 		},
 		{
 			name:      "typed nil",
@@ -77,9 +80,13 @@ func TestIssue33ActualFailureObjectType(t *testing.T) {
 			assert.False(t, result.Effective())
 
 			getResult := Get(tt.value, tt.path)
-			require.NotEmpty(t, getResult.Diagnosis())
-			assert.True(t, errors.Is(getResult.Diagnosis()[0], tt.sentinel))
-			assert.Equal(t, err.Error(), getResult.Diagnosis()[0].Error())
+			if tt.diagnosed {
+				require.NotEmpty(t, getResult.Diagnosis())
+				assert.True(t, errors.Is(getResult.Diagnosis()[0], tt.sentinel))
+				assert.Equal(t, err.Error(), getResult.Diagnosis()[0].Error())
+			} else {
+				assert.Empty(t, getResult.Diagnosis())
+			}
 		})
 	}
 }
@@ -307,6 +314,7 @@ type issue33RedactionObject struct {
 	Secret   string
 	Stringer issue33StringerValue
 	Err      issue33ErrorValue
+	Items    []int
 }
 
 func TestIssue33RedactsSelectorKeysAndObjectValues(t *testing.T) {
@@ -319,12 +327,13 @@ func TestIssue33RedactsSelectorKeysAndObjectValues(t *testing.T) {
 		encodedPrefix = `ISSUE33_PREFIX\.CANARY`
 		encodedFail   = `ISSUE33_FAILING\#CANARY`
 	)
-	path := encodedPrefix + "." + encodedFail
+	path := encodedPrefix + ".Items." + encodedFail
 	value := map[string]interface{}{
 		prefixKey: issue33RedactionObject{
 			Secret:   objectCanary,
 			Stringer: issue33StringerValue{value: stringCanary},
 			Err:      issue33ErrorValue{value: errorCanary},
+			Items:    []int{},
 		},
 	}
 
@@ -419,6 +428,8 @@ func TestIssue33ContextPreservesErrorsIs(t *testing.T) {
 		ErrParseInt,
 		ErrUnableExpand,
 		ErrInvalidValue,
+		ErrExpansionLimit,
+		ErrInvalidSelector,
 	}
 	for _, sentinel := range sentinels {
 		t.Run(sentinel.Error(), func(t *testing.T) {
@@ -426,6 +437,70 @@ func TestIssue33ContextPreservesErrorsIs(t *testing.T) {
 			assert.ErrorIs(t, contextual, sentinel)
 		})
 	}
+}
+
+type issue33ExpansionSecret struct {
+	Secret string
+}
+
+func TestIssue33ExpansionLimitContext(t *testing.T) {
+	const (
+		selectorCanary = "ISSUE33_EXPANSION_SELECTOR_CANARY"
+		objectCanary   = "ISSUE33_EXPANSION_OBJECT_CANARY"
+	)
+	overLimit := make([]issue33ExpansionSecret, 10_001)
+	overLimit[0].Secret = objectCanary
+	input := map[string]interface{}{selectorCanary: overLimit}
+	directPath := selectorCanary + "#"
+
+	assertContext := func(t *testing.T, contextual error, path string, offset, operation uint64) {
+		t.Helper()
+		require.Error(t, contextual)
+		assert.ErrorIs(t, contextual, ErrExpansionLimit)
+		assert.Contains(t, contextual.Error(), fmt.Sprintf(",offset=%d,op=%d,total_len=%d: ", offset, operation, len(path)))
+		assert.LessOrEqual(t, len(contextual.Error()), maxContextErrorLen)
+		assert.True(t, utf8.ValidString(contextual.Error()))
+		assert.Equal(t, 1, strings.Count(contextual.Error(), "type="))
+		assert.NotContains(t, contextual.Error(), selectorCanary)
+		assert.NotContains(t, contextual.Error(), objectCanary)
+	}
+	assertGet := func(t *testing.T, result Result, path string, offset, operation uint64) {
+		t.Helper()
+		assert.False(t, result.Effective())
+		assert.Empty(t, result.Values())
+		require.Len(t, result.Diagnosis(), 1)
+		assertContext(t, result.Diagnosis()[0], path, offset, operation)
+	}
+	assertGetE := func(t *testing.T, result Result, err error, path string, offset, operation uint64) {
+		t.Helper()
+		assert.False(t, result.Effective())
+		assert.Empty(t, result.Values())
+		assertContext(t, err, path, offset, operation)
+	}
+
+	t.Run("top-level", func(t *testing.T) {
+		offset := uint64(len(selectorCanary))
+		assertGet(t, Get(input, directPath), directPath, offset, 1)
+		result, err := GetE(input, directPath)
+		assertGetE(t, result, err, directPath, offset, 1)
+	})
+
+	t.Run("top-level expanded branch", func(t *testing.T) {
+		path := "#." + directPath
+		offset := uint64(len("#.") + len(selectorCanary))
+		assertGet(t, Get([]interface{}{input}, path), path, offset, 2)
+		result, err := GetE([]interface{}{input}, path)
+		assertGetE(t, result, err, path, offset, 2)
+	})
+
+	t.Run("expanded Result methods", func(t *testing.T) {
+		expanded := Get([]interface{}{input}, "#")
+		require.True(t, expanded.Effective())
+		offset := uint64(len(selectorCanary))
+		assertGet(t, expanded.Get(directPath), directPath, offset, 1)
+		result, err := expanded.GetE(directPath)
+		assertGetE(t, result, err, directPath, offset, 1)
+	})
 }
 
 func TestIssue33ResultMethodParityAndFreshOrigin(t *testing.T) {
@@ -542,14 +617,13 @@ func TestIssue33HostileValidSelectorsAndMissingResolution(t *testing.T) {
 				getResult = Get(value, tt.path)
 			})
 			require.Error(t, getEError)
-			require.Len(t, getResult.Diagnosis(), 1)
-			for _, contextual := range []error{getEError, getResult.Diagnosis()[0]} {
-				assert.ErrorIs(t, contextual, ErrInvalidValue)
-				assert.LessOrEqual(t, len(contextual.Error()), maxContextErrorLen)
-				assert.True(t, utf8.ValidString(contextual.Error()))
-				for _, canary := range tt.canaries {
-					assert.NotContains(t, contextual.Error(), canary)
-				}
+			assert.False(t, getResult.Effective())
+			assert.Empty(t, getResult.Diagnosis(), "valid map misses preserve selector-contract B15")
+			assert.ErrorIs(t, getEError, ErrInvalidValue)
+			assert.LessOrEqual(t, len(getEError.Error()), maxContextErrorLen)
+			assert.True(t, utf8.ValidString(getEError.Error()))
+			for _, canary := range tt.canaries {
+				assert.NotContains(t, getEError.Error(), canary)
 			}
 		})
 	}
@@ -658,6 +732,8 @@ func issue33HasPackageSentinel(err error) bool {
 		ErrParseInt,
 		ErrUnableExpand,
 		ErrInvalidValue,
+		ErrExpansionLimit,
+		ErrInvalidSelector,
 	} {
 		if errors.Is(err, sentinel) {
 			return true
