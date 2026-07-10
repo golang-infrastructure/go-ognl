@@ -723,18 +723,19 @@ func parseString(t reflect.Type, v reflect.Value, value string, depth int) (inte
 		return nil, Invalid, ErrSliceSubscript
 
 	case reflect.Struct:
-		rv := v.FieldByName(value)
-		if !rv.IsValid() {
+		rt, ok := t.FieldByName(value)
+		if !ok {
 			return nil, Invalid, nil
 		}
 
 		cp := reflect.New(v.Type()).Elem()
 		cp.Set(v)
-		rv = cp.FieldByName(value)
+		rv, err := cp.FieldByIndexErr(rt.Index)
+		if err != nil {
+			return nil, Invalid, ErrInvalidValue
+		}
 
 		res := reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem().Interface()
-
-		rt, _ := t.FieldByName(value)
 
 		if rt.Anonymous {
 			nv, nt, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value, depth+1)
