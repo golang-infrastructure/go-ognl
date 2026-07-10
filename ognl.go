@@ -12,6 +12,7 @@
 //     struct field name.
 //   - "#" expands the current value into a list: subsequent segments are then
 //     applied to every element (similar to flat-map). "##" expands twice.
+//     Expansion work and result count are bounded per Get/GetE call.
 //   - Use "\\" to escape a literal "." inside a key, e.g. "Foo\\.Bar".
 //
 // Concurrency: Get/GetE and the methods on a Result do not mutate their inputs
@@ -47,6 +48,10 @@ var ErrParseInt = errors.New("parse int error")
 var ErrUnableExpand = errors.New("unable to expand")
 
 var ErrInvalidValue = errors.New("invalid value")
+
+// ErrExpansionLimit reports that '#' expansion exceeded the fixed operation
+// or result limit for one Get/GetE call.
+var ErrExpansionLimit = errors.New("expansion limit exceeded")
 
 // Type classifies a Result's value. Its constants are declared in the same
 // order as the reflect.Kind constants, so Type(v.Kind()) is a safe conversion
@@ -163,6 +168,11 @@ type Result struct {
 	// diagnosis collects non-fatal errors encountered while traversing; it does
 	// not affect the returned value.
 	diagnosis []error
+
+	// retainedResults is internal accounting for expanded list slots reachable
+	// from raw during one resolve call. Public entry points always start a fresh
+	// budget; the field lets a parent account for nested child expansions.
+	retainedResults int
 }
 
 // Effective reports whether the Result carries a usable value: its Type is not
@@ -244,17 +254,34 @@ func (r Result) Diagnosis() []error {
 // collected. It is safe to call Get repeatedly, and concurrently, on the same
 // Result: each call allocates its own backing slice and never mutates r.
 func (r Result) Get(path string) Result {
+	return r.get(path, &expansionBudget{})
+}
+
+func (r Result) get(path string, budget *expansionBudget) Result {
 	if r.deployment {
 		nr := r
+		nr.retainedResults = 0
 		src, _ := r.raw.([]interface{})
 		out := make([]interface{}, 0, len(src))
 		diag := append([]error(nil), r.diagnosis...)
 		for _, item := range src {
-			next := Get(item, path)
-			if next.typ != Invalid {
-				out = append(out, next.raw)
-			}
+			next := get(item, path, 0, budget)
 			diag = append(diag, next.diagnosis...)
+			if budget.err != nil {
+				nr.diagnosis = diag
+				return expansionLimitResult(nr, budget.err, item, path)
+			}
+			if next.typ != Invalid {
+				if err := budget.retainResults(1); err != nil {
+					nr.diagnosis = diag
+					return expansionLimitResult(nr, err, item, path)
+				}
+				out = append(out, next.raw)
+				nr.retainedResults += next.retainedResults + 1
+			} else if err := budget.releaseResults(next.retainedResults); err != nil {
+				nr.diagnosis = diag
+				return expansionLimitResult(nr, err, item, path)
+			}
 		}
 		// Preserve the nil vs empty-slice distinction of the original raw so
 		// Value()/Values() stay observationally identical.
@@ -265,25 +292,42 @@ func (r Result) Get(path string) Result {
 		nr.diagnosis = diag
 		return nr
 	}
-	return Get(r.raw, path)
+	return get(r.raw, path, 0, budget)
 }
 
 // GetE is the error-returning form of Get. On an expanded Result it returns an
-// error only when no element matched path. Like Get, it never mutates r and is
-// safe to call concurrently.
+// error when no element matched path or when expansion exceeds its per-call
+// limit. Like Get, it never mutates r and is safe to call concurrently.
 func (r Result) GetE(path string) (Result, error) {
+	return r.getE(path, &expansionBudget{})
+}
+
+func (r Result) getE(path string, budget *expansionBudget) (Result, error) {
 	if r.deployment {
 		nr := r
+		nr.retainedResults = 0
 		src, _ := r.raw.([]interface{})
 		out := make([]interface{}, 0, len(src))
 		diag := append([]error(nil), r.diagnosis...)
 		for _, item := range src {
-			next, err := GetE(item, path)
+			next, err := getE(item, path, 0, budget)
+			if budget.err != nil || errors.Is(err, ErrExpansionLimit) {
+				if err == nil {
+					err = budget.err
+				}
+				return invalidExpansionResult(nr), wrapError(err, item, path)
+			}
 			if err != nil {
 				diag = append(diag, wrapError(err, item, path))
 			}
 			if next.typ != Invalid {
+				if err := budget.retainResults(1); err != nil {
+					return invalidExpansionResult(nr), wrapError(err, item, path)
+				}
 				out = append(out, next.raw)
+				nr.retainedResults += next.retainedResults + 1
+			} else if err := budget.releaseResults(next.retainedResults); err != nil {
+				return invalidExpansionResult(nr), wrapError(err, item, path)
 			}
 			diag = append(diag, next.diagnosis...)
 		}
@@ -297,7 +341,7 @@ func (r Result) GetE(path string) (Result, error) {
 		}
 		return nr, nil
 	}
-	return GetE(r.raw, path)
+	return getE(r.raw, path, 0, budget)
 }
 
 // Parse wraps a value in a Result without navigating into it, so paths can be
@@ -310,10 +354,10 @@ func Parse(result interface{}) Result {
 // error describing the first fatal failure (it is the error-returning form of
 // Get). See the package doc for the path syntax.
 func GetE(value interface{}, path string) (Result, error) {
-	return getE(value, path, 0)
+	return getE(value, path, 0, &expansionBudget{})
 }
 
-func getE(value interface{}, path string, depth int) (Result, error) {
+func getE(value interface{}, path string, depth int, budget *expansionBudget) (Result, error) {
 	if depth > maxResolveDepth {
 		return Result{typ: Invalid, raw: value}, wrapError(ErrInvalidStructure, value, path)
 	}
@@ -346,13 +390,29 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 			case true:
 				list := result.raw.([]interface{})
 				ln := len(list)
+				if err := budget.releaseResults(result.retainedResults); err != nil {
+					return invalidExpansionResult(result), wrapError(err, list, path[index+1:])
+				}
+				result.retainedResults = 0
 				for i := 0; i < ln; i++ {
-					next, err := getE(list[i], path[index+1:], depth+1)
+					next, err := getE(list[i], path[index+1:], depth+1, budget)
+					if budget.err != nil || errors.Is(err, ErrExpansionLimit) {
+						if err == nil {
+							err = budget.err
+						}
+						return invalidExpansionResult(result), wrapError(err, list[i], path[index+1:])
+					}
 					if err != nil {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], path[index+1:]))
 					}
 					if next.typ != Invalid {
+						if err := budget.retainResults(1); err != nil {
+							return invalidExpansionResult(result), wrapError(err, list[i], path[index+1:])
+						}
 						list = append(list, next.raw)
+						result.retainedResults += next.retainedResults + 1
+					} else if err := budget.releaseResults(next.retainedResults); err != nil {
+						return invalidExpansionResult(result), wrapError(err, list[i], path[index+1:])
 					}
 
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
@@ -385,19 +445,33 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 				result.typ = Interface
 			}
 		case '#':
+			if err := budget.consumeOperations(1); err != nil {
+				result.deployment = true
+				return invalidExpansionResult(result), wrapError(err, result.raw, "#")
+			}
 			// 转化成slice 类型 平铺
 			switch result.deployment {
 			case true:
 				// queue 展开
 				list := result.raw.([]interface{})
 				ln := len(list)
+				if err := budget.releaseResults(result.retainedResults); err != nil {
+					return invalidExpansionResult(result), wrapError(err, list, "#")
+				}
+				result.retainedResults = 0
 				for i := 0; i < ln; i++ {
-					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0)
+					raw, typ, err := deploymentWithBudget(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0, budget)
+					if errors.Is(err, ErrExpansionLimit) {
+						return invalidExpansionResult(result), wrapError(err, list[i], "#")
+					}
 					if err != nil {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
 					if typ != Invalid {
 						list = append(list, raw...)
+						result.retainedResults += len(raw)
+					} else if err := budget.releaseResults(len(raw)); err != nil {
+						return invalidExpansionResult(result), wrapError(err, list[i], "#")
 					}
 				}
 				result.raw = cloneTail(list, ln)
@@ -413,8 +487,12 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 				// panic on the type assertion when deployment fails (e.g. on a
 				// scalar "#").
 				src := result.raw
-				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src), 0)
+				raw, typ, err := deploymentWithBudget(reflect.TypeOf(src), reflect.ValueOf(src), 0, budget)
 				result.raw, result.typ = raw, typ
+				if errors.Is(err, ErrExpansionLimit) {
+					return invalidExpansionResult(result), wrapError(err, src, "#")
+				}
+				result.retainedResults = len(raw)
 				if err != nil {
 					return result, wrapError(err, src, "#")
 				}
@@ -434,6 +512,10 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 				)
 				list := result.raw.([]interface{})
 				ln := len(list)
+				if err := budget.releaseResults(result.retainedResults); err != nil {
+					return invalidExpansionResult(result), wrapError(err, list, sv)
+				}
+				result.retainedResults = 0
 				for i := 0; i < ln; i++ {
 					if digit {
 						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v, 0)
@@ -444,7 +526,11 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
 					}
 					if tp != Invalid {
+						if err := budget.retainResults(1); err != nil {
+							return invalidExpansionResult(result), wrapError(err, list[i], sv)
+						}
 						list = append(list, value)
+						result.retainedResults++
 					}
 				}
 				result.raw = cloneTail(list, ln)
@@ -479,14 +565,14 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 
 // Get resolves path against value and returns the Result. It does not return an
 // error: an unresolved path yields a Result whose Effective reports false, and
-// non-fatal problems are recorded in Result.Diagnosis. Path length is bounded,
-// so adversarial paths cannot exhaust the stack. See the package doc for the
-// path syntax.
+// non-fatal problems are recorded in Result.Diagnosis. Expansion work and
+// result count are bounded, so adversarial '#' paths cannot exhaust memory or
+// CPU. See the package doc for the path syntax.
 func Get(value interface{}, path string) Result {
-	return get(value, path, 0)
+	return get(value, path, 0, &expansionBudget{})
 }
 
-func get(value interface{}, path string, depth int) Result {
+func get(value interface{}, path string, depth int, budget *expansionBudget) Result {
 	if depth > maxResolveDepth {
 		return Result{typ: Invalid, raw: value, diagnosis: []error{wrapError(ErrInvalidStructure, value, path)}}
 	}
@@ -518,12 +604,25 @@ func get(value interface{}, path string, depth int) Result {
 			case true:
 				list := result.raw.([]interface{})
 				ln := len(list)
+				if err := budget.releaseResults(result.retainedResults); err != nil {
+					return expansionLimitResult(result, err, list, path[index+1:])
+				}
+				result.retainedResults = 0
 				for i := 0; i < ln; i++ {
-					next := get(list[i], path[index+1:], depth+1)
-					if next.typ != Invalid {
-						list = append(list, next.raw)
-					}
+					next := get(list[i], path[index+1:], depth+1, budget)
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
+					if budget.err != nil {
+						return expansionLimitResult(result, budget.err, list[i], path[index+1:])
+					}
+					if next.typ != Invalid {
+						if err := budget.retainResults(1); err != nil {
+							return expansionLimitResult(result, err, list[i], path[index+1:])
+						}
+						list = append(list, next.raw)
+						result.retainedResults += next.retainedResults + 1
+					} else if err := budget.releaseResults(next.retainedResults); err != nil {
+						return expansionLimitResult(result, err, list[i], path[index+1:])
+					}
 				}
 				result.raw = cloneTail(list, ln)
 				return result
@@ -548,19 +647,33 @@ func get(value interface{}, path string, depth int) Result {
 				result.typ = Interface
 			}
 		case '#':
+			if err := budget.consumeOperations(1); err != nil {
+				result.deployment = true
+				return expansionLimitResult(result, err, result.raw, "#")
+			}
 			// 转化成slice 类型 平铺
 			switch result.deployment {
 			case true:
 				// queue 展开
 				list := result.raw.([]interface{})
 				ln := len(list)
+				if err := budget.releaseResults(result.retainedResults); err != nil {
+					return expansionLimitResult(result, err, list, "#")
+				}
+				result.retainedResults = 0
 				for i := 0; i < ln; i++ {
-					raw, typ, err := deployment(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0)
+					raw, typ, err := deploymentWithBudget(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0, budget)
+					if errors.Is(err, ErrExpansionLimit) {
+						return expansionLimitResult(result, err, list[i], "#")
+					}
 					if err != nil {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
 					}
 					if typ != Invalid {
 						list = append(list, raw...)
+						result.retainedResults += len(raw)
+					} else if err := budget.releaseResults(len(raw)); err != nil {
+						return expansionLimitResult(result, err, list[i], "#")
 					}
 				}
 				result.raw = cloneTail(list, ln)
@@ -568,11 +681,15 @@ func get(value interface{}, path string, depth int) Result {
 				result.deployment = true
 				// Expand result.raw, not the stale entry value in tp/tv.
 				src := result.raw
-				raw, typ, err := deployment(reflect.TypeOf(src), reflect.ValueOf(src), 0)
+				raw, typ, err := deploymentWithBudget(reflect.TypeOf(src), reflect.ValueOf(src), 0, budget)
+				if errors.Is(err, ErrExpansionLimit) {
+					return expansionLimitResult(result, err, src, "#")
+				}
 				if err != nil {
 					result.diagnosis = append(result.diagnosis, wrapError(err, src, "#"))
 				}
 				result.raw, result.typ = raw, typ
+				result.retainedResults = len(raw)
 			}
 
 		default:
@@ -589,6 +706,10 @@ func get(value interface{}, path string, depth int) Result {
 				)
 				list := result.raw.([]interface{})
 				ln := len(list)
+				if err := budget.releaseResults(result.retainedResults); err != nil {
+					return expansionLimitResult(result, err, list, sv)
+				}
+				result.retainedResults = 0
 				for i := 0; i < ln; i++ {
 					if digit {
 						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v, 0)
@@ -599,7 +720,11 @@ func get(value interface{}, path string, depth int) Result {
 						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
 					}
 					if tp != Invalid {
+						if err := budget.retainResults(1); err != nil {
+							return expansionLimitResult(result, err, list[i], sv)
+						}
 						list = append(list, value)
+						result.retainedResults++
 					}
 				}
 				result.raw = cloneTail(list, ln)
@@ -667,6 +792,87 @@ func GetMany(value interface{}, path ...string) []Result {
 		results = append(results, Get(value, s))
 	}
 	return results
+}
+
+// The expansion limits are intentionally fixed and internal: they bound the
+// CPU work and retained result size of one public Get/GetE or Result.Get/GetE
+// call without adding configuration to the existing API. Ten thousand results
+// keep a returned []interface{} in the low hundreds of KiB, while the larger
+// operation allowance leaves room for normal fan-out and repeated expansion.
+// Each '#' and each value it scans consume one operation.
+const (
+	maxExpansionOperations = 100_000
+	maxExpansionResults    = 10_000
+)
+
+type expansionBudget struct {
+	operations int
+	results    int // expanded list slots currently retained across the result tree
+	err        error
+}
+
+func (b *expansionBudget) consumeOperations(count int) error {
+	if b == nil || count == 0 {
+		return nil
+	}
+	if b.err != nil {
+		return b.err
+	}
+	if count < 0 || count > maxExpansionOperations-b.operations {
+		b.err = fmt.Errorf("expansion operations exceed %d: %w", maxExpansionOperations, ErrExpansionLimit)
+		return b.err
+	}
+	b.operations += count
+	return nil
+}
+
+func (b *expansionBudget) retainResults(count int) error {
+	if b == nil || count == 0 {
+		return nil
+	}
+	if b.err != nil {
+		return b.err
+	}
+	if count < 0 || count > maxExpansionResults-b.results {
+		b.err = fmt.Errorf("expansion results exceed %d: %w", maxExpansionResults, ErrExpansionLimit)
+		return b.err
+	}
+	b.results += count
+	return nil
+}
+
+func (b *expansionBudget) releaseResults(count int) error {
+	if b == nil || count == 0 {
+		return nil
+	}
+	if b.err != nil {
+		return b.err
+	}
+	if count < 0 || count > b.results {
+		b.err = fmt.Errorf("invalid expansion result accounting: %w", ErrExpansionLimit)
+		return b.err
+	}
+	b.results -= count
+	return nil
+}
+
+func invalidExpansionResult(result Result) Result {
+	result.typ = Invalid
+	result.raw = nil
+	result.deployment = true
+	result.retainedResults = 0
+	return result
+}
+
+func expansionLimitResult(result Result, err error, object interface{}, path string) Result {
+	result = invalidExpansionResult(result)
+	for _, diagnosis := range result.diagnosis {
+		if errors.Is(diagnosis, ErrExpansionLimit) {
+			return result
+		}
+	}
+	result.diagnosis = append(result.diagnosis, wrapError(err, object, path))
+	return result
 }
 
 // maxResolveDepth bounds every recursive descent in this package: parseString
@@ -830,6 +1036,10 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (inter
 }
 
 func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type, error) {
+	return deploymentWithBudget(t, v, depth, nil)
+}
+
+func deploymentWithBudget(t reflect.Type, v reflect.Value, depth int, budget *expansionBudget) ([]interface{}, Type, error) {
 	if depth > maxResolveDepth {
 		return nil, Invalid, ErrUnableExpand
 	}
@@ -845,9 +1055,15 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 		if !v.Elem().IsValid() {
 			return nil, Invalid, nil
 		}
-		return deployment(t, v.Elem(), depth+1)
+		return deploymentWithBudget(t, v.Elem(), depth+1, budget)
 
 	case reflect.Map:
+		if err := budget.consumeOperations(v.Len()); err != nil {
+			return nil, Invalid, err
+		}
+		if err := budget.retainResults(v.Len()); err != nil {
+			return nil, Invalid, err
+		}
 		var ret []interface{}
 		var tp Type = Interface
 
@@ -861,6 +1077,12 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 		return ret, tp, nil
 
 	case reflect.Slice, reflect.Array:
+		if err := budget.consumeOperations(v.Len()); err != nil {
+			return nil, Invalid, err
+		}
+		if err := budget.retainResults(v.Len()); err != nil {
+			return nil, Invalid, err
+		}
 		var ret []interface{}
 		var tp Type = Interface
 
@@ -876,6 +1098,12 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 		return ret, tp, nil
 
 	case reflect.Struct:
+		if err := budget.consumeOperations(v.NumField()); err != nil {
+			return nil, Invalid, err
+		}
+		if err := budget.retainResults(v.NumField()); err != nil {
+			return nil, Invalid, err
+		}
 		var ret []interface{}
 
 		for i := 0; i < v.NumField(); i++ {
@@ -898,6 +1126,12 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 		return ret, Interface, nil
 
 	default:
+		if err := budget.consumeOperations(1); err != nil {
+			return nil, Invalid, err
+		}
+		if err := budget.retainResults(1); err != nil {
+			return nil, Invalid, err
+		}
 		return []interface{}{v.Interface()}, Type(v.Kind()), ErrUnableExpand
 	}
 }
