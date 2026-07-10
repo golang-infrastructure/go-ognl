@@ -246,6 +246,71 @@ func TestGetE_ScalarHash_NoPanic(t *testing.T) {
 	})
 }
 
+// Issue #25: a failed non-expanded lookup retained the input value and its
+// initial Interface type, making the failed Result look successful.
+type issue25User struct {
+	Name string
+}
+
+func TestIssue25_GetEFailureIsInvalid(t *testing.T) {
+	r, err := GetE(issue25User{Name: "a"}, "Missing")
+	require.Error(t, err)
+	assert.Equal(t, Invalid, r.Type())
+	assert.False(t, r.Effective())
+	assert.Nil(t, r.Value())
+}
+
+func TestIssue25_GetEExpansionAllFailures(t *testing.T) {
+	users := []issue25User{{Name: "a"}}
+
+	t.Run("top-level", func(t *testing.T) {
+		r, err := GetE(users, "#.Missing")
+		require.Error(t, err)
+		assert.False(t, r.Effective())
+		assert.Empty(t, r.Values())
+		require.NotEmpty(t, r.Diagnosis())
+		assert.True(t, errors.Is(r.Diagnosis()[0], ErrInvalidValue))
+	})
+
+	t.Run("expanded Result", func(t *testing.T) {
+		expanded, err := GetE(users, "#")
+		require.NoError(t, err)
+
+		r, err := expanded.GetE("Missing")
+		require.Error(t, err)
+		assert.False(t, r.Effective())
+		assert.Empty(t, r.Values())
+		require.NotEmpty(t, r.Diagnosis())
+		assert.True(t, errors.Is(r.Diagnosis()[0], ErrInvalidValue))
+	})
+}
+
+func TestIssue25_GetEExpansionKeepsOnlySuccesses(t *testing.T) {
+	values := []interface{}{
+		issue25User{Name: "a"},
+		map[string]interface{}{"Missing": "found"},
+	}
+
+	t.Run("top-level", func(t *testing.T) {
+		r, err := GetE(values, "#.Missing")
+		require.NoError(t, err)
+		assert.Equal(t, []interface{}{"found"}, r.Values())
+		require.Len(t, r.Diagnosis(), 1)
+		assert.True(t, errors.Is(r.Diagnosis()[0], ErrInvalidValue))
+	})
+
+	t.Run("expanded Result", func(t *testing.T) {
+		expanded, err := GetE(values, "#")
+		require.NoError(t, err)
+
+		r, err := expanded.GetE("Missing")
+		require.NoError(t, err)
+		assert.Equal(t, []interface{}{"found"}, r.Values())
+		require.Len(t, r.Diagnosis(), 1)
+		assert.True(t, errors.Is(r.Diagnosis()[0], ErrInvalidValue))
+	})
+}
+
 // ---- Coverage for previously-untested public API ----
 
 func TestCoverage_GetMany(t *testing.T) {
