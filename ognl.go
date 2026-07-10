@@ -5,15 +5,21 @@
 //
 // Path syntax:
 //
-//   - "." separates path segments: "A.B.C".
-//   - A segment is a map key, a struct field name, or a numeric index. A
-//     non-negative integer indexes a slice/array element, a map keyed by int,
-//     or a struct field by position; anything else is a string map key or a
-//     struct field name.
+//   - An unescaped "." separates path segments. Empty, leading, trailing, and
+//     repeated separators do not address empty map keys.
+//   - At segment start, unescaped ASCII space, tab, line feed, and carriage
+//     return are ignored. Once a segment starts, those bytes are literal.
+//   - String-keyed maps use the decoded segment text exactly, even when it is
+//     numeric. Int-keyed maps, slices, arrays, and structs accept decimal
+//     non-negative indices, including leading zeroes, a leading "+", and the
+//     compatibility spellings "-0", "-00", and so on for index zero.
 //   - "#" expands the current value into a list: subsequent segments are then
 //     applied to every element (similar to flat-map). "##" expands twice.
 //     Expansion work and result count are bounded per Get/GetE call.
-//   - Use "\\" to escape a literal "." inside a key, e.g. "Foo\\.Bar".
+//   - "\\" is a general escape introducer. For example, "\\.", "\\#", and
+//     "\\\\" address a literal dot, hash, and backslash. A final unmatched
+//     backslash is invalid and is reported as ErrInvalidSelector.
+//   - Unicode text is matched exactly without normalization or case folding.
 //
 // Result compatibility contract:
 //
@@ -44,6 +50,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -68,6 +75,9 @@ var ErrInvalidValue = errors.New("invalid value")
 // ErrExpansionLimit reports that '#' expansion exceeded the fixed operation
 // or result limit for one Get/GetE call.
 var ErrExpansionLimit = errors.New("expansion limit exceeded")
+
+// ErrInvalidSelector reports malformed selector syntax.
+var ErrInvalidSelector = errors.New("invalid selector")
 
 // Type is traversal metadata returned by Result.Type, not necessarily the
 // dynamic Go kind of Result.Value. Its constants are declared in the same order
@@ -292,10 +302,16 @@ func (r Result) Diagnosis() []error {
 // collected. It is safe to call Get repeatedly, and concurrently, on the same
 // Result: each call allocates its own backing slice and never mutates r.
 func (r Result) Get(path string) Result {
-	return r.get(path, &expansionBudget{})
+	tokens, err := parseSelector(path)
+	if err != nil {
+		diagnosis := append([]error(nil), r.diagnosis...)
+		diagnosis = append(diagnosis, wrapError(err, r.raw, path))
+		return Result{typ: Invalid, diagnosis: diagnosis}
+	}
+	return r.get(tokens, path, &expansionBudget{})
 }
 
-func (r Result) get(path string, budget *expansionBudget) Result {
+func (r Result) get(tokens []selectorToken, path string, budget *expansionBudget) Result {
 	if r.deployment {
 		nr := r
 		nr.retainedResults = 0
@@ -303,7 +319,7 @@ func (r Result) get(path string, budget *expansionBudget) Result {
 		out := make([]interface{}, 0, len(src))
 		diag := append([]error(nil), r.diagnosis...)
 		for _, item := range src {
-			next := get(item, path, 0, budget)
+			next := get(item, tokens, path, 0, budget)
 			diag = append(diag, next.diagnosis...)
 			if budget.err != nil {
 				nr.diagnosis = diag
@@ -335,7 +351,7 @@ func (r Result) get(path string, budget *expansionBudget) Result {
 		nr.diagnosis = diag
 		return nr
 	}
-	return get(r.raw, path, 0, budget)
+	return get(r.raw, tokens, path, 0, budget)
 }
 
 // GetE is the error-returning form of Get. On an expanded Result it returns an
@@ -344,10 +360,14 @@ func (r Result) get(path string, budget *expansionBudget) Result {
 // another path to it returns ErrInvalidValue. Like Get, it never mutates r and
 // is safe to call concurrently.
 func (r Result) GetE(path string) (Result, error) {
-	return r.getE(path, &expansionBudget{})
+	tokens, err := parseSelector(path)
+	if err != nil {
+		return Result{typ: Invalid, diagnosis: append([]error(nil), r.diagnosis...)}, wrapError(err, r.raw, path)
+	}
+	return r.getE(tokens, path, &expansionBudget{})
 }
 
-func (r Result) getE(path string, budget *expansionBudget) (Result, error) {
+func (r Result) getE(tokens []selectorToken, path string, budget *expansionBudget) (Result, error) {
 	if r.deployment {
 		nr := r
 		nr.retainedResults = 0
@@ -355,7 +375,7 @@ func (r Result) getE(path string, budget *expansionBudget) (Result, error) {
 		out := make([]interface{}, 0, len(src))
 		diag := append([]error(nil), r.diagnosis...)
 		for _, item := range src {
-			next, err := getE(item, path, 0, budget)
+			next, err := getE(item, tokens, path, 0, budget)
 			if budget.err != nil || errors.Is(err, ErrExpansionLimit) {
 				if err == nil {
 					err = budget.err
@@ -391,7 +411,7 @@ func (r Result) getE(path string, budget *expansionBudget) (Result, error) {
 		}
 		return nr, nil
 	}
-	return getE(r.raw, path, 0, budget)
+	return getE(r.raw, tokens, path, 0, budget)
 }
 
 // Parse wraps a value in a Result without navigating into it, so paths can be
@@ -404,27 +424,25 @@ func Parse(result interface{}) Result {
 // error describing the first fatal failure (it is the error-returning form of
 // Get). See the package doc for the path syntax.
 func GetE(value interface{}, path string) (Result, error) {
-	return getE(value, path, 0, &expansionBudget{})
+	tokens, err := parseSelector(path)
+	if err != nil {
+		return Result{typ: Invalid}, wrapError(err, value, path)
+	}
+	return getE(value, tokens, path, 0, &expansionBudget{})
 }
 
-func getE(value interface{}, path string, depth int, budget *expansionBudget) (Result, error) {
+func getE(value interface{}, tokens []selectorToken, path string, depth int, budget *expansionBudget) (Result, error) {
 	if depth > maxResolveDepth {
 		return Result{typ: Invalid, raw: value}, wrapError(ErrInvalidStructure, value, path)
 	}
-	if value == nil && (len(path) == 0 || validIdentifier(path, 0)) {
+	if value == nil && len(tokens) == 0 {
 		return Result{typ: Interface, raw: value}, nil
 	}
 	if value == nil {
 		return Result{typ: Invalid, raw: value}, wrapError(ErrInvalidValue, value, path)
 	}
 
-	var (
-		index  int
-		result = Result{
-			typ: Interface,
-			raw: value,
-		}
-	)
+	result := Result{typ: Interface, raw: value}
 	tp := reflect.TypeOf(value)
 	tv := reflect.ValueOf(value)
 
@@ -433,181 +451,151 @@ func getE(value interface{}, path string, depth int, budget *expansionBudget) (R
 		return result, wrapError(ErrInvalidValue, value, path)
 	}
 
-	for ; index < len(path); index++ {
-		switch path[index] {
-		case ' ', '\t', '\n', '\r', '.':
-			switch result.deployment {
-			case true:
+	for index, token := range tokens {
+		if token.kind == selectorSeparatorToken {
+			remaining := tokens[index+1:]
+			if result.deployment {
 				list := result.raw.([]interface{})
-				ln := len(list)
+				out := makeResultList(list)
 				if err := budget.releaseResults(result.retainedResults); err != nil {
-					return invalidExpansionResult(result), wrapError(err, list, path[index+1:])
+					return invalidExpansionResult(result), wrapError(err, list, token.remainingPath)
 				}
 				result.retainedResults = 0
-				for i := 0; i < ln; i++ {
-					next, err := getE(list[i], path[index+1:], depth+1, budget)
+				for _, item := range list {
+					next, err := getE(item, remaining, token.remainingPath, depth+1, budget)
 					if budget.err != nil || errors.Is(err, ErrExpansionLimit) {
 						if err == nil {
 							err = budget.err
 						}
-						return invalidExpansionResult(result), wrapError(err, list[i], path[index+1:])
+						return invalidExpansionResult(result), wrapError(err, item, token.remainingPath)
 					}
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], path[index+1:]))
+						result.diagnosis = append(result.diagnosis, wrapError(err, item, token.remainingPath))
 					}
 					if next.typ != Invalid {
 						if err := budget.retainResults(1); err != nil {
-							return invalidExpansionResult(result), wrapError(err, list[i], path[index+1:])
+							return invalidExpansionResult(result), wrapError(err, item, token.remainingPath)
 						}
-						list = append(list, next.raw)
+						out = append(out, next.raw)
 						result.retainedResults += next.retainedResults + 1
 					} else if err := budget.releaseResults(next.retainedResults); err != nil {
-						return invalidExpansionResult(result), wrapError(err, list[i], path[index+1:])
+						return invalidExpansionResult(result), wrapError(err, item, token.remainingPath)
 					}
-
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
 				}
-				result.raw = cloneTail(list, ln)
-				if len(list[ln:]) == 0 {
-					return result, wrapError(ErrInvalidValue, list, string(path[index]))
+				result.raw = out
+				if len(out) == 0 {
+					return result, wrapError(ErrInvalidValue, list, ".")
 				}
 				return result, nil
-			default:
-				// Iterative descent (no recursion): a separator just re-bases
-				// tp/tv on the current value and lets the loop continue. This
-				// keeps stack depth O(1) in the number of separators, so a path
-				// with millions of '.' (or a self-referential "Mid.Mid.Mid..."
-				// path) can no longer exhaust the goroutine stack.
-				if result.raw == nil {
-					if len(path[index+1:]) == 0 || validIdentifier(path[index+1:], 0) {
-						result.typ = Interface
-						continue
-					}
-					result.typ = Invalid
-					return result, wrapError(ErrInvalidValue, result.raw, path[index+1:])
-				}
-				tp = reflect.TypeOf(result.raw)
-				tv = reflect.ValueOf(result.raw)
-				if !tv.IsValid() {
-					result.typ = Invalid
-					return result, wrapError(ErrInvalidValue, result.raw, path[index+1:])
-				}
-				result.typ = Interface
 			}
-		case '#':
+
+			if result.raw == nil {
+				if onlySelectorSeparators(remaining) {
+					result.typ = Interface
+					continue
+				}
+				result.typ = Invalid
+				return result, wrapError(ErrInvalidValue, result.raw, token.remainingPath)
+			}
+			tp, tv = reflect.TypeOf(result.raw), reflect.ValueOf(result.raw)
+			if !tv.IsValid() {
+				result.typ = Invalid
+				return result, wrapError(ErrInvalidValue, result.raw, token.remainingPath)
+			}
+			result.typ = Interface
+			continue
+		}
+
+		if token.kind == selectorExpansionToken {
 			if err := budget.consumeOperations(1); err != nil {
 				result.deployment = true
 				return invalidExpansionResult(result), wrapError(err, result.raw, "#")
 			}
-			// 转化成slice 类型 平铺
-			switch result.deployment {
-			case true:
-				// queue 展开
+			if result.deployment {
 				list := result.raw.([]interface{})
-				ln := len(list)
+				out := makeResultList(list)
 				if err := budget.releaseResults(result.retainedResults); err != nil {
 					return invalidExpansionResult(result), wrapError(err, list, "#")
 				}
 				result.retainedResults = 0
-				for i := 0; i < ln; i++ {
-					raw, typ, err := deploymentWithBudget(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0, budget)
+				for _, item := range list {
+					raw, typ, err := deploymentWithBudget(reflect.TypeOf(item), reflect.ValueOf(item), 0, budget)
 					if errors.Is(err, ErrExpansionLimit) {
-						return invalidExpansionResult(result), wrapError(err, list[i], "#")
+						return invalidExpansionResult(result), wrapError(err, item, "#")
 					}
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
+						result.diagnosis = append(result.diagnosis, wrapError(err, item, "#"))
 					}
 					if typ != Invalid {
-						list = append(list, raw...)
+						out = append(out, raw...)
 						result.retainedResults += len(raw)
 					} else if err := budget.releaseResults(len(raw)); err != nil {
-						return invalidExpansionResult(result), wrapError(err, list[i], "#")
+						return invalidExpansionResult(result), wrapError(err, item, "#")
 					}
 				}
-				result.raw = cloneTail(list, ln)
-				if len(list[ln:]) == 0 {
+				result.raw = out
+				if len(out) == 0 {
 					return result, wrapError(ErrInvalidValue, list, "#")
 				}
-			default:
-				result.deployment = true
-				// Expand the value we have descended to (result.raw), not the
-				// stale entry value captured in tp/tv. Write raw/typ back BEFORE
-				// the error check so the deployed Result is always consistent
-				// (raw is a []interface{}) — otherwise Effective()/Values() would
-				// panic on the type assertion when deployment fails (e.g. on a
-				// scalar "#").
-				src := result.raw
-				raw, typ, err := deploymentWithBudget(reflect.TypeOf(src), reflect.ValueOf(src), 0, budget)
-				result.raw, result.typ = raw, typ
-				if errors.Is(err, ErrExpansionLimit) {
-					return invalidExpansionResult(result), wrapError(err, src, "#")
-				}
-				result.retainedResults = len(raw)
-				if err != nil {
-					return result, wrapError(err, src, "#")
-				}
+				continue
 			}
 
-		default:
-			key, newIndex := parseNextKey(path, index)
-			index = newIndex
-			sv := key
-			v, err := strconv.Atoi(sv)
-			digit := err == nil && v >= 0
-			switch result.deployment {
-			case true:
-				var (
-					value interface{}
-					tp    Type
-				)
-				list := result.raw.([]interface{})
-				ln := len(list)
-				if err := budget.releaseResults(result.retainedResults); err != nil {
-					return invalidExpansionResult(result), wrapError(err, list, sv)
-				}
-				result.retainedResults = 0
-				for i := 0; i < ln; i++ {
-					if digit {
-						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v, 0)
-					} else {
-						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv, 0)
-					}
-					if err != nil {
-						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
-					}
-					if tp != Invalid {
-						if err := budget.retainResults(1); err != nil {
-							return invalidExpansionResult(result), wrapError(err, list[i], sv)
-						}
-						list = append(list, value)
-						result.retainedResults++
-					}
-				}
-				result.raw = cloneTail(list, ln)
-				if len(list[ln:]) == 0 {
-					return result, wrapError(ErrInvalidValue, list, sv)
-				}
-
-			default:
-				var (
-					nv  interface{}
-					tpe Type
-				)
-				if digit {
-					nv, tpe, err = parseInt(tp, tv, v, 0)
-				} else {
-					nv, tpe, err = parseString(tp, tv, sv, 0)
-				}
-				result.raw = nv
-				result.typ = tpe
-				if err != nil {
-					return result, wrapError(err, value, sv)
-				}
-				if tpe == Invalid {
-					return result, wrapError(ErrInvalidValue, value, sv)
-				}
+			result.deployment = true
+			src := result.raw
+			raw, typ, err := deploymentWithBudget(reflect.TypeOf(src), reflect.ValueOf(src), 0, budget)
+			result.raw, result.typ = raw, typ
+			if errors.Is(err, ErrExpansionLimit) {
+				return invalidExpansionResult(result), wrapError(err, src, "#")
 			}
+			result.retainedResults = len(raw)
+			if err != nil {
+				return result, wrapError(err, src, "#")
+			}
+			continue
 		}
+
+		segment := token.value
+		if result.deployment {
+			list := result.raw.([]interface{})
+			out := makeResultList(list)
+			if err := budget.releaseResults(result.retainedResults); err != nil {
+				return invalidExpansionResult(result), wrapError(err, list, segment)
+			}
+			result.retainedResults = 0
+			for _, item := range list {
+				resolved, typ, err := resolveSegment(reflect.TypeOf(item), reflect.ValueOf(item), segment)
+				if err != nil {
+					result.diagnosis = append(result.diagnosis, wrapError(err, item, segment))
+				}
+				if typ != Invalid {
+					if err := budget.retainResults(1); err != nil {
+						return invalidExpansionResult(result), wrapError(err, item, segment)
+					}
+					out = append(out, resolved)
+					result.retainedResults++
+				}
+			}
+			result.raw = out
+			if len(out) == 0 {
+				return result, wrapError(ErrInvalidValue, list, segment)
+			}
+			continue
+		}
+
+		if result.raw == nil {
+			result.typ = Invalid
+			return result, wrapError(ErrInvalidValue, result.raw, segment)
+		}
+		nv, typ, err := resolveSegment(tp, tv, segment)
+		result.raw, result.typ = nv, typ
+		if err != nil {
+			return result, wrapError(err, value, segment)
+		}
+		if typ == Invalid {
+			return result, wrapError(ErrInvalidValue, value, segment)
+		}
+		tp, tv = reflect.TypeOf(nv), reflect.ValueOf(nv)
 	}
 
 	return result, nil
@@ -617,25 +605,28 @@ func getE(value interface{}, path string, depth int, budget *expansionBudget) (R
 // error: an unresolved path yields a Result whose Effective reports false, and
 // non-fatal problems are recorded in Result.Diagnosis. Expansion work and
 // result count are bounded, so adversarial '#' paths cannot exhaust memory or
-// CPU. See the package doc for the path syntax.
+// CPU, while recursive reflection and expanded-list traversal are depth-bounded.
+// See the package doc for the path syntax.
 func Get(value interface{}, path string) Result {
-	return get(value, path, 0, &expansionBudget{})
+	tokens, err := parseSelector(path)
+	if err != nil {
+		return Result{typ: Invalid, diagnosis: []error{wrapError(err, value, path)}}
+	}
+	return get(value, tokens, path, 0, &expansionBudget{})
 }
 
-func get(value interface{}, path string, depth int, budget *expansionBudget) Result {
+func get(value interface{}, tokens []selectorToken, path string, depth int, budget *expansionBudget) Result {
 	if depth > maxResolveDepth {
 		return Result{typ: Invalid, raw: value, diagnosis: []error{wrapError(ErrInvalidStructure, value, path)}}
 	}
-	if value == nil && (len(path) == 0 || validIdentifier(path, 0)) {
+	if value == nil && len(tokens) == 0 {
 		return Result{typ: Interface, raw: value}
 	}
 	if value == nil {
 		return Result{typ: Invalid, raw: value, diagnosis: []error{wrapError(ErrInvalidValue, value, path)}}
 	}
 
-	var index int
-
-	var result = Result{
+	result := Result{
 		typ: Interface,
 		raw: value,
 	}
@@ -647,191 +638,307 @@ func get(value interface{}, path string, depth int, budget *expansionBudget) Res
 		return result
 	}
 
-	for ; index < len(path); index++ {
-		switch path[index] {
-		case ' ', '\t', '\n', '\r', '.':
-			switch result.deployment {
-			case true:
+	for index, token := range tokens {
+		if token.kind == selectorSeparatorToken {
+			remaining := tokens[index+1:]
+			if result.deployment {
 				list := result.raw.([]interface{})
-				ln := len(list)
+				out := makeResultList(list)
 				if err := budget.releaseResults(result.retainedResults); err != nil {
-					return expansionLimitResult(result, err, list, path[index+1:])
+					return expansionLimitResult(result, err, list, token.remainingPath)
 				}
 				result.retainedResults = 0
-				for i := 0; i < ln; i++ {
-					next := get(list[i], path[index+1:], depth+1, budget)
+				for _, item := range list {
+					next := get(item, remaining, token.remainingPath, depth+1, budget)
 					result.diagnosis = append(result.diagnosis, next.diagnosis...)
 					if budget.err != nil {
-						return expansionLimitResult(result, budget.err, list[i], path[index+1:])
+						return expansionLimitResult(result, budget.err, item, token.remainingPath)
 					}
 					if next.typ != Invalid {
 						if err := budget.retainResults(1); err != nil {
-							return expansionLimitResult(result, err, list[i], path[index+1:])
+							return expansionLimitResult(result, err, item, token.remainingPath)
 						}
-						list = append(list, next.raw)
+						out = append(out, next.raw)
 						result.retainedResults += next.retainedResults + 1
 					} else if err := budget.releaseResults(next.retainedResults); err != nil {
-						return expansionLimitResult(result, err, list[i], path[index+1:])
+						return expansionLimitResult(result, err, item, token.remainingPath)
 					}
 				}
-				result.raw = cloneTail(list, ln)
+				result.raw = out
 				return result
-			default:
-				// Iterative descent; see the GetE counterpart for rationale.
-				if result.raw == nil {
-					if len(path[index+1:]) == 0 || validIdentifier(path[index+1:], 0) {
-						result.typ = Interface
-						continue
-					}
-					result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, result.raw, path[index+1:]))
-					result.typ = Invalid
-					return result
-				}
-				tp = reflect.TypeOf(result.raw)
-				tv = reflect.ValueOf(result.raw)
-				if !tv.IsValid() {
-					result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, result.raw, path[index+1:]))
-					result.typ = Invalid
-					return result
-				}
-				result.typ = Interface
 			}
-		case '#':
+
+			if result.raw == nil {
+				if onlySelectorSeparators(remaining) {
+					result.typ = Interface
+					continue
+				}
+				result.typ = Invalid
+				result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, result.raw, token.remainingPath))
+				return result
+			}
+			tp, tv = reflect.TypeOf(result.raw), reflect.ValueOf(result.raw)
+			if !tv.IsValid() {
+				result.typ = Invalid
+				result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, result.raw, token.remainingPath))
+				return result
+			}
+			result.typ = Interface
+			continue
+		}
+
+		if token.kind == selectorExpansionToken {
 			if err := budget.consumeOperations(1); err != nil {
 				result.deployment = true
 				return expansionLimitResult(result, err, result.raw, "#")
 			}
-			// 转化成slice 类型 平铺
-			switch result.deployment {
-			case true:
-				// queue 展开
+			if result.deployment {
 				list := result.raw.([]interface{})
-				ln := len(list)
+				out := makeResultList(list)
 				if err := budget.releaseResults(result.retainedResults); err != nil {
 					return expansionLimitResult(result, err, list, "#")
 				}
 				result.retainedResults = 0
-				for i := 0; i < ln; i++ {
-					raw, typ, err := deploymentWithBudget(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), 0, budget)
+				for _, item := range list {
+					raw, typ, err := deploymentWithBudget(reflect.TypeOf(item), reflect.ValueOf(item), 0, budget)
 					if errors.Is(err, ErrExpansionLimit) {
-						return expansionLimitResult(result, err, list[i], "#")
+						return expansionLimitResult(result, err, item, "#")
 					}
 					if err != nil {
-						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], "#"))
+						result.diagnosis = append(result.diagnosis, wrapError(err, item, "#"))
 					}
 					if typ != Invalid {
-						list = append(list, raw...)
+						out = append(out, raw...)
 						result.retainedResults += len(raw)
 					} else if err := budget.releaseResults(len(raw)); err != nil {
-						return expansionLimitResult(result, err, list[i], "#")
+						return expansionLimitResult(result, err, item, "#")
 					}
 				}
-				result.raw = cloneTail(list, ln)
-			default:
-				result.deployment = true
-				// Expand result.raw, not the stale entry value in tp/tv.
-				src := result.raw
-				raw, typ, err := deploymentWithBudget(reflect.TypeOf(src), reflect.ValueOf(src), 0, budget)
-				if errors.Is(err, ErrExpansionLimit) {
-					return expansionLimitResult(result, err, src, "#")
-				}
-				if err != nil {
-					result.diagnosis = append(result.diagnosis, wrapError(err, src, "#"))
-				}
-				result.raw, result.typ = raw, typ
-				result.retainedResults = len(raw)
+				result.raw = out
+				continue
 			}
 
-		default:
-			key, newIndex := parseNextKey(path, index)
-			index = newIndex
-			sv := key
-			v, err := strconv.Atoi(sv)
-			digit := err == nil && v >= 0
-			switch result.deployment {
-			case true:
-				var (
-					value interface{}
-					tp    Type
-				)
-				list := result.raw.([]interface{})
-				ln := len(list)
-				if err := budget.releaseResults(result.retainedResults); err != nil {
-					return expansionLimitResult(result, err, list, sv)
-				}
-				result.retainedResults = 0
-				for i := 0; i < ln; i++ {
-					if digit {
-						value, tp, err = parseInt(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), v, 0)
-					} else {
-						value, tp, err = parseString(reflect.TypeOf(list[i]), reflect.ValueOf(list[i]), sv, 0)
-					}
-					if err != nil {
-						result.diagnosis = append(result.diagnosis, wrapError(err, list[i], sv))
-					}
-					if tp != Invalid {
-						if err := budget.retainResults(1); err != nil {
-							return expansionLimitResult(result, err, list[i], sv)
-						}
-						list = append(list, value)
-						result.retainedResults++
-					}
-				}
-				result.raw = cloneTail(list, ln)
-			default:
-				var (
-					nv  interface{}
-					tpe Type
-				)
-				if digit {
-					nv, tpe, err = parseInt(tp, tv, v, 0)
-				} else {
-					nv, tpe, err = parseString(tp, tv, sv, 0)
-				}
+			result.deployment = true
+			src := result.raw
+			raw, typ, err := deploymentWithBudget(reflect.TypeOf(src), reflect.ValueOf(src), 0, budget)
+			if errors.Is(err, ErrExpansionLimit) {
+				return expansionLimitResult(result, err, src, "#")
+			}
+			if err != nil {
+				result.diagnosis = append(result.diagnosis, wrapError(err, src, "#"))
+			}
+			result.raw, result.typ = raw, typ
+			result.retainedResults = len(raw)
+			continue
+		}
+
+		segment := token.value
+		if result.deployment {
+			list := result.raw.([]interface{})
+			out := makeResultList(list)
+			if err := budget.releaseResults(result.retainedResults); err != nil {
+				return expansionLimitResult(result, err, list, segment)
+			}
+			result.retainedResults = 0
+			for _, item := range list {
+				resolved, typ, err := resolveSegment(reflect.TypeOf(item), reflect.ValueOf(item), segment)
 				if err != nil {
-					result.diagnosis = append(result.diagnosis, wrapError(err, value, sv))
+					result.diagnosis = append(result.diagnosis, wrapError(err, item, segment))
 				}
-				result.raw = nv
-				result.typ = tpe
-				if tpe == Invalid {
-					return result
+				if typ != Invalid {
+					if err := budget.retainResults(1); err != nil {
+						return expansionLimitResult(result, err, item, segment)
+					}
+					out = append(out, resolved)
+					result.retainedResults++
 				}
 			}
+			result.raw = out
+			continue
 		}
+
+		if result.raw == nil {
+			result.typ = Invalid
+			result.diagnosis = append(result.diagnosis, wrapError(ErrInvalidValue, result.raw, segment))
+			return result
+		}
+		nv, typ, err := resolveSegment(tp, tv, segment)
+		if err != nil {
+			result.diagnosis = append(result.diagnosis, wrapError(err, value, segment))
+		}
+		result.raw, result.typ = nv, typ
+		if typ == Invalid {
+			return result
+		}
+		tp, tv = reflect.TypeOf(nv), reflect.ValueOf(nv)
 	}
 
 	return result
 }
 
-// 从选择器中解析出下一个要处理的key
-// params:
-// selector: 路径选择器，比如"Foo.Bar.Name"，比如"Foo\\.Bar\\.Name"
-// index: 选择器上次消费到的位置
-//
-// returns:
-// string 下一个要解析的key
-// index selector被消费到的位置
-func parseNextKey(selector string, index int) (string, int) {
-	key := make([]byte, 0)
-loop:
-	for ; index < len(selector); index++ {
+type selectorTokenKind uint8
+
+const (
+	selectorSegmentToken selectorTokenKind = iota
+	selectorSeparatorToken
+	selectorExpansionToken
+)
+
+type selectorToken struct {
+	kind          selectorTokenKind
+	value         string
+	remainingPath string
+}
+
+// parseSelector validates selector syntax and decodes it once into the private
+// token form shared by every traversal entry point.
+func parseSelector(selector string) ([]selectorToken, error) {
+	tokens := make([]selectorToken, 0, 8)
+	segment := make([]byte, 0)
+	started := false
+	flushSegment := func() {
+		if !started {
+			return
+		}
+		tokens = append(tokens, selectorToken{kind: selectorSegmentToken, value: string(segment)})
+		segment = segment[:0]
+		started = false
+	}
+
+	for index := 0; index < len(selector); {
 		switch selector[index] {
 		case '\\':
-			// 先跳过转义字符
-			index++
-			// 转义字符，无论下一个字符是什么都跳过，如果有的话
-			if index < len(selector) {
-				key = append(key, selector[index])
+			if index+1 >= len(selector) {
+				return nil, ErrInvalidSelector
 			}
-		case '.', '#':
-			index--
-			break loop
+			_, size := utf8.DecodeRuneInString(selector[index+1:])
+			segment = append(segment, selector[index+1:index+1+size]...)
+			started = true
+			index += size + 1
+		case '.':
+			flushSegment()
+			if len(tokens) == 0 || tokens[len(tokens)-1].kind != selectorSeparatorToken {
+				tokens = append(tokens, selectorToken{
+					kind:          selectorSeparatorToken,
+					remainingPath: selector[index+1:],
+				})
+			}
+			index++
+		case '#':
+			flushSegment()
+			tokens = append(tokens, selectorToken{kind: selectorExpansionToken})
+			index++
 		default:
-			// 普通字符，当做key的一部分消费掉
-			key = append(key, selector[index])
+			if !started && isIgnorableLeadingWhitespace(selector[index]) {
+				index++
+				continue
+			}
+			segment = append(segment, selector[index])
+			started = true
+			index++
 		}
 	}
-	return string(key), index
+	flushSegment()
+	return tokens, nil
+}
+
+func isIgnorableLeadingWhitespace(value byte) bool {
+	switch value {
+	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveSegment chooses string or integer lookup only after observing the
+// current container. This preserves numeric text as-is for string-keyed maps.
+func resolveSegment(t reflect.Type, v reflect.Value, segment string) (interface{}, Type, error) {
+	kind, keyKind := selectorContainerKinds(t, v)
+	if kind == reflect.Map && keyKind == reflect.String {
+		return parseString(t, v, segment, 0)
+	}
+	if index, ok := parseSelectorIndex(segment); ok {
+		return parseInt(t, v, index, 0)
+	}
+	return parseString(t, v, segment, 0)
+}
+
+func selectorContainerKinds(t reflect.Type, v reflect.Value) (reflect.Kind, reflect.Kind) {
+	for t != nil {
+		switch t.Kind() {
+		case reflect.Ptr:
+			t = t.Elem()
+			if v.IsValid() && v.Kind() == reflect.Ptr && !v.IsNil() {
+				v = v.Elem()
+			} else {
+				v = reflect.Value{}
+			}
+		case reflect.Interface:
+			if !v.IsValid() || v.IsNil() {
+				return reflect.Interface, reflect.Invalid
+			}
+			v = v.Elem()
+			t = v.Type()
+		default:
+			if t.Kind() == reflect.Map {
+				return reflect.Map, t.Key().Kind()
+			}
+			return t.Kind(), reflect.Invalid
+		}
+	}
+	return reflect.Invalid, reflect.Invalid
+}
+
+func parseSelectorIndex(segment string) (int, bool) {
+	if segment == "" {
+		return 0, false
+	}
+
+	start := 0
+	switch segment[0] {
+	case '+':
+		start = 1
+	case '-':
+		if len(segment) == 1 {
+			return 0, false
+		}
+		for index := 1; index < len(segment); index++ {
+			if segment[index] != '0' {
+				return 0, false
+			}
+		}
+		return 0, true
+	}
+	if start == len(segment) {
+		return 0, false
+	}
+	for index := start; index < len(segment); index++ {
+		if segment[index] < '0' || segment[index] > '9' {
+			return 0, false
+		}
+	}
+	value, err := strconv.Atoi(segment)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+func makeResultList(source []interface{}) []interface{} {
+	if source == nil {
+		return nil
+	}
+	return make([]interface{}, 0, len(source))
+}
+
+func onlySelectorSeparators(tokens []selectorToken) bool {
+	for _, token := range tokens {
+		if token.kind != selectorSeparatorToken {
+			return false
+		}
+	}
+	return true
 }
 
 // GetMany resolves several paths against the same value and returns one Result
@@ -1188,21 +1295,6 @@ func deploymentWithBudget(t reflect.Type, v reflect.Value, depth int, budget *ex
 		}
 		return []interface{}{v.Interface()}, Type(v.Kind()), ErrUnableExpand
 	}
-}
-
-func validIdentifier(path string, limit int) bool {
-	count := 0
-	for _, v := range path {
-		switch v {
-		case ' ', '\t', '\n', '\r', '.':
-		default:
-			count++
-			if count > limit {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // wrapError annotates err with the path and the *type* of the object being

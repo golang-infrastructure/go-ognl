@@ -70,9 +70,14 @@ func main() {
 
 ## 关键词说明
 
-1. `.` 代表路径分隔符(Q: 那如果我的 key 就是带 `.` 怎么办? A: 使用 `\\` 进行转义,例如 `Foo\\.Bar` 表示 key 为 `Foo.Bar`)
-2. `#` 表示对**当前已下钻到的值**进行展开:若它是一个 list,则 `#` 之后的 path 会作用到每一个元素上(类似 flat-map);`##` 表示展开两层。
-   - 路径段为非负整数时按下标取值(slice/array 元素、`map[int]` 的 key、或 struct 的第 N 个字段);否则作为字符串 key 或字段名。
+1. 未转义的 `.` 是路径分隔符；开头、结尾或连续的 `.` 不表示空 key。当前语法不能访问空字符串 map key。
+2. 每个路径段开头未转义的 ASCII 空格、tab、换行和回车会被忽略；路径段开始后，这四个字符是 key 的字面内容。若 key 以这些字符开头，请转义第一个字符，例如 `\ leading`。
+3. 数字路径段按当前容器解释：
+   - `map[string]`（包括自定义 string key 类型）始终按原始段文本精确查找，因此 `1`、`01`、`+1` 是不同的 key。
+   - `map[int]`（包括自定义 int key 类型）、slice、array 和 struct 支持十进制非负下标；允许前导零和一个前导 `+`，并兼容把 `-0`、`-00` 等全零负数解释为下标 0。负非零、溢出和其它文本不是下标。
+4. `#` 对**当前已下钻到的值**进行展开：若它是一个 list，则后续路径段会作用到每一个元素上（类似 flat-map）；`##` 表示展开两层。展开后的每个元素会按自己的容器类型解释数字路径段。
+5. `\` 是通用转义符，后一个字符按字面量处理。例如 `Foo\.Bar` 表示 key `Foo.Bar`，`\#` 表示字面量 `#`，`\\` 表示一个字面量反斜杠。Unicode key 按 UTF-8 精确匹配，不做归一化或大小写折叠。
+6. 选择器末尾单独的反斜杠非法；末尾连续反斜杠为奇数个时非法，偶数个时表示字面量反斜杠。
 
 ## 并发安全
 
@@ -82,8 +87,9 @@ func main() {
 
 ## 错误处理
 
-- `Get` 不返回 error:无法解析时 `Result.Effective()` 返回 `false`,过程中的非致命错误记录在 `Result.Diagnosis()` 中。递归下钻深度受限,对抗性路径不会耗尽调用栈。
-- `GetE` 返回首个致命错误。
+- `Get` 不返回 error：无法解析时 `Result.Effective()` 返回 `false`，过程中的非致命错误记录在 `Result.Diagnosis()` 中。非法选择器会返回 `Type()==Invalid`、无部分结果，并在 Diagnosis 中包装 `ErrInvalidSelector`。
+- `GetE` 返回首个致命错误。非法选择器会在遍历前失败，并返回可由 `errors.Is(err, ognl.ErrInvalidSelector)` 识别的错误和无部分值的 Invalid Result。
+- 反射递归和展开列表的递归遍历有深度上限，长路径不会按路径段无限增长调用栈。
 - 每次 `Get`/`GetE`（包括 `Result` 上的同名方法）的 `#` 展开最多执行 100,000 次操作，并在整个返回结果树中累计保留 10,000 个结果。超限时 `Get` 返回无效结果并在 `Diagnosis()` 中记录 `ErrExpansionLimit`，`GetE` 返回可由 `errors.Is` 识别的 `ErrExpansionLimit`，且不返回部分展开结果。
 - 所有错误都用 `%w` 包装,可用 `errors.Is(err, ognl.ErrInvalidValue)` 等判断;错误信息**只包含被遍历对象的类型名,不含其值**,避免泄露密码 / token 等敏感数据。
 
