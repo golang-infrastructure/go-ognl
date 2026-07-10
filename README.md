@@ -80,8 +80,9 @@ func main() {
 
 ## 错误处理
 
-- `Get` 不返回 error:无法解析时 `Result.Effective()` 返回 `false`,过程中的非致命错误记录在 `Result.Diagnosis()` 中。路径长度受限,对抗性路径不会耗尽调用栈。
+- `Get` 不返回 error:无法解析时 `Result.Effective()` 返回 `false`,过程中的非致命错误记录在 `Result.Diagnosis()` 中。递归下钻深度受限,对抗性路径不会耗尽调用栈。
 - `GetE` 返回首个致命错误。
+- 每次 `Get`/`GetE`（包括 `Result` 上的同名方法）的 `#` 展开最多执行 100,000 次操作并保留 10,000 个结果。超限时 `Get` 返回无效结果并在 `Diagnosis()` 中记录 `ErrExpansionLimit`，`GetE` 返回可由 `errors.Is` 识别的 `ErrExpansionLimit`，且不返回部分展开结果。
 - 所有错误都用 `%w` 包装,可用 `errors.Is(err, ognl.ErrInvalidValue)` 等判断;错误信息**只包含被遍历对象的类型名,不含其值**,避免泄露密码 / token 等敏感数据。
 
 ## API
