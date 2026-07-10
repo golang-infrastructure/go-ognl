@@ -288,12 +288,17 @@ func (r Result) get(path string, budget *expansionBudget) Result {
 				return expansionLimitResult(nr, budget.err, item, path)
 			}
 			if next.typ != Invalid {
-				if err := budget.retainResults(1); err != nil {
-					nr.diagnosis = diag
-					return expansionLimitResult(nr, err, item, path)
+				if next.deployment {
+					out = append(out, next.raw.([]interface{})...)
+					nr.retainedResults += next.retainedResults
+				} else {
+					if err := budget.retainResults(1); err != nil {
+						nr.diagnosis = diag
+						return expansionLimitResult(nr, err, item, path)
+					}
+					out = append(out, next.raw)
+					nr.retainedResults += next.retainedResults + 1
 				}
-				out = append(out, next.raw)
-				nr.retainedResults += next.retainedResults + 1
 			} else if err := budget.releaseResults(next.retainedResults); err != nil {
 				nr.diagnosis = diag
 				return expansionLimitResult(nr, err, item, path)
@@ -337,11 +342,16 @@ func (r Result) getE(path string, budget *expansionBudget) (Result, error) {
 				diag = append(diag, wrapError(err, item, path))
 			}
 			if next.typ != Invalid {
-				if err := budget.retainResults(1); err != nil {
-					return invalidExpansionResult(nr), wrapError(err, item, path)
+				if next.deployment {
+					out = append(out, next.raw.([]interface{})...)
+					nr.retainedResults += next.retainedResults
+				} else {
+					if err := budget.retainResults(1); err != nil {
+						return invalidExpansionResult(nr), wrapError(err, item, path)
+					}
+					out = append(out, next.raw)
+					nr.retainedResults += next.retainedResults + 1
 				}
-				out = append(out, next.raw)
-				nr.retainedResults += next.retainedResults + 1
 			} else if err := budget.releaseResults(next.retainedResults); err != nil {
 				return invalidExpansionResult(nr), wrapError(err, item, path)
 			}
