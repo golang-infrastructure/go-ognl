@@ -41,10 +41,28 @@ type issue36MixedFields struct {
 	Tail     uint
 }
 
+type issue36SelectorRoot struct {
+	Level issue36SelectorLevel
+}
+
+type issue36SelectorLevel struct {
+	Branch issue36SelectorBranch
+}
+
+type issue36SelectorBranch struct {
+	Leaf    issue36SelectorLeaf
+	Payload issue36Private32
+}
+
+type issue36SelectorLeaf struct {
+	Name string
+}
+
 var (
 	issue36ResultSink []interface{}
 	issue36TypeSink   Type
 	issue36ErrorSink  error
+	issue36GetSink    Result
 )
 
 var issue36Private8Value = issue36Private8{
@@ -56,6 +74,15 @@ var issue36Private32Value = issue36Private32{
 	f08: 8, f09: 9, f10: 10, f11: 11, f12: 12, f13: 13, f14: 14, f15: 15,
 	f16: 16, f17: 17, f18: 18, f19: 19, f20: 20, f21: 21, f22: 22, f23: 23,
 	f24: 24, f25: 25, f26: 26, f27: 27, f28: 28, f29: 29, f30: 30, f31: 31,
+}
+
+var issue36SelectorValue = issue36SelectorRoot{
+	Level: issue36SelectorLevel{
+		Branch: issue36SelectorBranch{
+			Leaf:    issue36SelectorLeaf{Name: "leaf"},
+			Payload: issue36Private32Value,
+		},
+	},
 }
 
 func TestIssue36DeploymentPreservesStructValuesAndOrder(t *testing.T) {
@@ -218,6 +245,41 @@ func BenchmarkIssue36Deployment(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				issue36ResultSink, issue36TypeSink, issue36ErrorSink = deployment(typ, rv, 0)
+			}
+		})
+	}
+}
+
+func BenchmarkIssue36GetSelectors(b *testing.B) {
+	benchmarks := []struct {
+		name      string
+		path      string
+		wantValue interface{}
+		wantLen   int
+	}{
+		{name: "deep", path: "Level.Branch.Leaf.Name", wantValue: "leaf"},
+		{name: "expandPrivateStruct", path: "Level.Branch.Payload#", wantLen: 32},
+	}
+
+	for _, benchmark := range benchmarks {
+		b.Run(benchmark.name, func(b *testing.B) {
+			got := Get(issue36SelectorValue, benchmark.path)
+			if !got.Effective() {
+				b.Fatalf("selector %q did not resolve", benchmark.path)
+			}
+			if benchmark.wantLen > 0 {
+				values, ok := got.Value().([]interface{})
+				if !ok || len(values) != benchmark.wantLen {
+					b.Fatalf("selector %q result = %#v, want %d values", benchmark.path, got.Value(), benchmark.wantLen)
+				}
+			} else if got.Value() != benchmark.wantValue {
+				b.Fatalf("selector %q result = %#v, want %#v", benchmark.path, got.Value(), benchmark.wantValue)
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				issue36GetSink = Get(issue36SelectorValue, benchmark.path)
 			}
 		})
 	}
