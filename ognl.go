@@ -583,7 +583,7 @@ func getE(value interface{}, tokens []selectorToken, path string, depth int, bud
 			}
 			result.retainedResults = len(raw)
 			failure := err
-			if failure == nil && typ == Invalid {
+			if failure == nil && typ == Invalid && src != nil {
 				failure = ErrInvalidValue
 			}
 			if failure != nil {
@@ -602,13 +602,13 @@ func getE(value interface{}, tokens []selectorToken, path string, depth int, bud
 			result.retainedResults = 0
 			var firstFailure error
 			for _, item := range list {
-				resolved, typ, err := resolveSegment(reflect.TypeOf(item), reflect.ValueOf(item), segment)
+				resolved, typ, failureType, err := resolveSegment(reflect.TypeOf(item), reflect.ValueOf(item), segment)
 				failure := err
 				if failure == nil && typ == Invalid {
 					failure = ErrInvalidValue
 				}
 				if failure != nil {
-					contextual := wrapResolutionError(failure, reflect.TypeOf(item), location)
+					contextual := wrapResolutionError(failure, failureType, location)
 					result.diagnosis = append(result.diagnosis, contextual)
 					if firstFailure == nil {
 						firstFailure = contextual
@@ -636,13 +636,13 @@ func getE(value interface{}, tokens []selectorToken, path string, depth int, bud
 			result.typ = Invalid
 			return result, wrapResolutionError(ErrInvalidValue, nil, location)
 		}
-		nv, typ, err := resolveSegment(tp, tv, segment)
+		nv, typ, failureType, err := resolveSegment(tp, tv, segment)
 		result.raw, result.typ = nv, typ
 		if err != nil {
-			return result, wrapResolutionError(err, tp, location)
+			return result, wrapResolutionError(err, failureType, location)
 		}
 		if typ == Invalid {
-			return result, wrapResolutionError(ErrInvalidValue, tp, location)
+			return result, wrapResolutionError(ErrInvalidValue, failureType, location)
 		}
 		tp, tv = reflect.TypeOf(nv), reflect.ValueOf(nv)
 	}
@@ -781,7 +781,7 @@ func get(value interface{}, tokens []selectorToken, path string, depth int, budg
 				return expansionLimitResult(result, wrapResolutionError(err, reflect.TypeOf(src), location))
 			}
 			failure := err
-			if failure == nil && typ == Invalid {
+			if failure == nil && typ == Invalid && src != nil {
 				failure = ErrInvalidValue
 			}
 			if failure != nil {
@@ -801,13 +801,13 @@ func get(value interface{}, tokens []selectorToken, path string, depth int, budg
 			}
 			result.retainedResults = 0
 			for _, item := range list {
-				resolved, typ, err := resolveSegment(reflect.TypeOf(item), reflect.ValueOf(item), segment)
+				resolved, typ, failureType, err := resolveSegment(reflect.TypeOf(item), reflect.ValueOf(item), segment)
 				failure := err
 				if failure == nil && typ == Invalid {
 					failure = ErrInvalidValue
 				}
 				if failure != nil {
-					result.diagnosis = append(result.diagnosis, wrapResolutionError(failure, reflect.TypeOf(item), location))
+					result.diagnosis = append(result.diagnosis, wrapResolutionError(failure, failureType, location))
 				}
 				if typ != Invalid {
 					if err := budget.retainResults(1); err != nil {
@@ -826,15 +826,12 @@ func get(value interface{}, tokens []selectorToken, path string, depth int, budg
 			result.diagnosis = append(result.diagnosis, wrapResolutionError(ErrInvalidValue, nil, location))
 			return result
 		}
-		nv, typ, err := resolveSegment(tp, tv, segment)
+		nv, typ, failureType, err := resolveSegment(tp, tv, segment)
 		if err != nil {
-			result.diagnosis = append(result.diagnosis, wrapResolutionError(err, tp, location))
+			result.diagnosis = append(result.diagnosis, wrapResolutionError(err, failureType, location))
 		}
 		result.raw, result.typ = nv, typ
 		if typ == Invalid {
-			if err == nil {
-				result.diagnosis = append(result.diagnosis, wrapResolutionError(ErrInvalidValue, tp, location))
-			}
 			return result
 		}
 		tp, tv = reflect.TypeOf(nv), reflect.ValueOf(nv)
@@ -941,7 +938,7 @@ func isIgnorableLeadingWhitespace(value byte) bool {
 
 // resolveSegment chooses string or integer lookup only after observing the
 // current container. This preserves numeric text as-is for string-keyed maps.
-func resolveSegment(t reflect.Type, v reflect.Value, segment string) (interface{}, Type, error) {
+func resolveSegment(t reflect.Type, v reflect.Value, segment string) (interface{}, Type, reflect.Type, error) {
 	kind, keyKind := selectorContainerKinds(t, v)
 	if kind == reflect.Map && keyKind == reflect.String {
 		return parseString(t, v, segment, 0)
@@ -1129,20 +1126,20 @@ func expansionLimitResult(result Result, err error) Result {
 // Invalid result / error instead of crashing.
 const maxResolveDepth = 1000
 
-func parseString(t reflect.Type, v reflect.Value, value string, depth int) (interface{}, Type, error) {
+func parseString(t reflect.Type, v reflect.Value, value string, depth int) (interface{}, Type, reflect.Type, error) {
 	if depth > maxResolveDepth {
-		return nil, Invalid, ErrInvalidStructure
+		return nil, Invalid, t, ErrInvalidStructure
 	}
 	if !v.IsValid() {
-		return nil, Invalid, nil
+		return nil, Invalid, t, nil
 	}
 	switch v.Kind() {
 	case reflect.Ptr, reflect.Interface:
 		if v.IsNil() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 		if !v.Elem().IsValid() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 		// Derive the type from the dereferenced value, not t.Elem(): for an
 		// interface kind t.Elem() panics, whereas v.Elem().Type() yields the
@@ -1153,7 +1150,7 @@ func parseString(t reflect.Type, v reflect.Value, value string, depth int) (inte
 	case reflect.Map:
 		// MUST map key is string
 		if t.Key().Kind() != reflect.String {
-			return nil, Invalid, ErrMapKeyMustString
+			return nil, Invalid, t, ErrMapKeyMustString
 		}
 
 		// Convert the lookup key to the map's actual key type. A defined key
@@ -1165,64 +1162,64 @@ func parseString(t reflect.Type, v reflect.Value, value string, depth int) (inte
 		}
 		mv := v.MapIndex(key)
 		if !mv.IsValid() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 
-		return mv.Interface(), Type(mv.Kind()), nil
+		return mv.Interface(), Type(mv.Kind()), t, nil
 
 	case reflect.Slice, reflect.Array:
-		return nil, Invalid, ErrSliceSubscript
+		return nil, Invalid, t, ErrSliceSubscript
 
 	case reflect.Struct:
 		rt, ok := t.FieldByName(value)
 		if !ok {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 
 		cp := reflect.New(v.Type()).Elem()
 		cp.Set(v)
 		rv, err := cp.FieldByIndexErr(rt.Index)
 		if err != nil {
-			return nil, Invalid, ErrInvalidValue
+			return nil, Invalid, t, ErrInvalidValue
 		}
 
 		res := reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem().Interface()
 
 		if rt.Anonymous {
-			nv, nt, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value, depth+1)
+			nv, nt, failureType, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value, depth+1)
 			if ne == nil && nt != Invalid {
-				return nv, nt, ne
+				return nv, nt, failureType, ne
 			}
 		}
 
-		return res, Type(rv.Kind()), nil
+		return res, Type(rv.Kind()), t, nil
 
 	default:
-		return nil, Invalid, ErrInvalidStructure
+		return nil, Invalid, t, ErrInvalidStructure
 	}
 }
 
-func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (interface{}, Type, error) {
+func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (interface{}, Type, reflect.Type, error) {
 	if depth > maxResolveDepth {
-		return nil, Invalid, ErrParseInt
+		return nil, Invalid, t, ErrParseInt
 	}
 	if !v.IsValid() {
-		return nil, Invalid, nil
+		return nil, Invalid, t, nil
 	}
 	switch v.Kind() {
 	case reflect.Ptr, reflect.Interface:
 		if v.IsNil() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 		if !v.Elem().IsValid() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 		ev := v.Elem()
 		return parseInt(ev.Type(), ev, tokenValue, depth+1)
 	case reflect.Map:
 		// MUST map key is int
 		if t.Key().Kind() != reflect.Int {
-			return nil, Invalid, ErrMapKeyMustInt
+			return nil, Invalid, t, ErrMapKeyMustInt
 		}
 
 		// Convert to the map's actual key type (handles type K int).
@@ -1232,30 +1229,30 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (inter
 		}
 		mv := v.MapIndex(key)
 		if !mv.IsValid() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 
-		return mv.Interface(), Type(mv.Kind()), nil
+		return mv.Interface(), Type(mv.Kind()), t, nil
 
 	case reflect.Slice, reflect.Array:
 		if tokenValue < 0 || tokenValue >= v.Len() {
-			return nil, Invalid, ErrIndexOutOfBounds
+			return nil, Invalid, t, ErrIndexOutOfBounds
 		}
 
 		value := v.Index(tokenValue)
 		if !value.IsValid() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
-		return value.Interface(), Type(value.Kind()), nil
+		return value.Interface(), Type(value.Kind()), t, nil
 
 	case reflect.Struct:
 		if tokenValue < 0 || tokenValue >= v.NumField() {
-			return nil, Invalid, ErrStructIndexOutOfBounds
+			return nil, Invalid, t, ErrStructIndexOutOfBounds
 		}
 
 		value := v.Field(tokenValue)
 		if !value.IsValid() {
-			return nil, Invalid, nil
+			return nil, Invalid, t, nil
 		}
 
 		cp := reflect.New(v.Type()).Elem()
@@ -1264,10 +1261,10 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (inter
 
 		res := reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Interface()
 
-		return res, Type(value.Kind()), nil
+		return res, Type(value.Kind()), t, nil
 
 	default:
-		return nil, Invalid, ErrParseInt
+		return nil, Invalid, t, ErrParseInt
 	}
 }
 

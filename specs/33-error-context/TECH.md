@@ -46,6 +46,8 @@ Each PRODUCT invariant has one primary test and exactly one mutation target. Pri
 
 Supporting verification, intentionally outside the one-to-one primary mapping:
 
+- `TestIssue33FirstExpansionInvalidContext` covers a typed-nil first `#` operation through direct, nested, and fresh `Result` calls. It requires `Invalid` plus a nil deployment error to become one contextual `ErrInvalidValue`; removing that mapping from either walker must fail the test.
+- `TestIssue33DereferencedFailureType` covers key and index failures after transparent pointer dereference through top-level, nested, deployed-branch, and `Result` calls. It requires the parse helpers to propagate the dereferenced failure type while preserving typed-nil pointer identity; replacing that type with the caller's pre-dereference type must fail the test.
 - `FuzzIssue33ErrorContextSafety` feeds arbitrary selector bytes and nested values through `Get`, `GetE`, `Result.Get`, and `Result.GetE`; it asserts no panic, valid bounded output for package sentinels, and absence of injected selector/object canaries.
 - `TestIssue33ConcurrentContextIsolation` runs the four public entry paths against shared read-only inputs under `go test -race`, asserting that locations and diagnostics never cross calls.
 - PR #38 stacking gate: before implementation begins, ensure `fix/issue-33-error-context` is based on PR #38 head `188d4a62d0df25b2af6bb0e0f57f3ad3088d8cfb`, then open its stacked PR with base `fix/issue-25-gete-expansion-failure`. Do not copy #25 implementation or tests into #33. After PR #38 merges, fetch its merged `main`, rebase the #33 branch onto `main`, retarget the stacked PR to `main`, and rerun the complete presubmit and B11/B12 tests before review continues.

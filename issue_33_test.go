@@ -84,6 +84,121 @@ func TestIssue33ActualFailureObjectType(t *testing.T) {
 	}
 }
 
+func TestIssue33FirstExpansionInvalidContext(t *testing.T) {
+	typedNil := (*issue33Leaf)(nil)
+	typeToken := strconv.QuoteToASCII(reflect.TypeOf(typedNil).String())
+	tests := []struct {
+		name      string
+		value     interface{}
+		path      string
+		offset    uint64
+		operation uint64
+	}{
+		{name: "direct", value: typedNil, path: "#", offset: 0, operation: 0},
+		{name: "nested", value: map[string]interface{}{"x": typedNil}, path: "x#", offset: 1, operation: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := issue33Context(typeToken, tt.offset, tt.operation, uint64(len(tt.path)), ErrInvalidValue)
+
+			t.Run("GetE", func(t *testing.T) {
+				result, err := GetE(tt.value, tt.path)
+				require.EqualError(t, err, want)
+				assert.ErrorIs(t, err, ErrInvalidValue)
+				assert.False(t, result.Effective())
+			})
+
+			t.Run("Get", func(t *testing.T) {
+				result := Get(tt.value, tt.path)
+				assert.False(t, result.Effective())
+				require.Len(t, result.Diagnosis(), 1)
+				assert.Equal(t, want, result.Diagnosis()[0].Error())
+				assert.ErrorIs(t, result.Diagnosis()[0], ErrInvalidValue)
+			})
+
+			t.Run("Result methods", func(t *testing.T) {
+				parsed := Parse(tt.value)
+				result, err := parsed.GetE(tt.path)
+				require.EqualError(t, err, want)
+				assert.False(t, result.Effective())
+
+				getResult := parsed.Get(tt.path)
+				assert.False(t, getResult.Effective())
+				require.Len(t, getResult.Diagnosis(), 1)
+				assert.Equal(t, want, getResult.Diagnosis()[0].Error())
+			})
+		})
+	}
+
+	t.Run("chained Result uses fresh origin", func(t *testing.T) {
+		resolved, err := GetE(map[string]interface{}{"x": typedNil}, "x")
+		require.NoError(t, err)
+		want := issue33Context(typeToken, 0, 0, 1, ErrInvalidValue)
+
+		result, err := resolved.GetE("#")
+		require.EqualError(t, err, want)
+		assert.False(t, result.Effective())
+
+		getResult := resolved.Get("#")
+		assert.False(t, getResult.Effective())
+		require.Len(t, getResult.Diagnosis(), 1)
+		assert.Equal(t, want, getResult.Diagnosis()[0].Error())
+	})
+}
+
+func TestIssue33DereferencedFailureType(t *testing.T) {
+	leaf := []int{}
+	tests := []struct {
+		name      string
+		value     interface{}
+		path      string
+		offset    uint64
+		operation uint64
+		sentinel  error
+		deployed  bool
+	}{
+		{name: "direct key", value: &leaf, path: "missing", offset: 0, operation: 0, sentinel: ErrSliceSubscript},
+		{name: "direct index", value: &leaf, path: "0", offset: 0, operation: 0, sentinel: ErrIndexOutOfBounds},
+		{name: "nested key", value: map[string]interface{}{"x": &leaf}, path: "x.missing", offset: 2, operation: 1, sentinel: ErrSliceSubscript},
+		{name: "deployed direct key", value: []interface{}{&leaf}, path: "#missing", offset: 1, operation: 1, sentinel: ErrSliceSubscript, deployed: true},
+		{name: "deployed direct index", value: []interface{}{&leaf}, path: "#0", offset: 1, operation: 1, sentinel: ErrIndexOutOfBounds, deployed: true},
+		{name: "deployed recursive key", value: []interface{}{&leaf}, path: "#.missing", offset: 2, operation: 1, sentinel: ErrSliceSubscript, deployed: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := issue33Context(`"[]int"`, tt.offset, tt.operation, uint64(len(tt.path)), tt.sentinel)
+
+			result, err := GetE(tt.value, tt.path)
+			require.EqualError(t, err, want)
+			assert.ErrorIs(t, err, tt.sentinel)
+			assert.False(t, result.Effective())
+			if tt.deployed {
+				require.Len(t, result.Diagnosis(), 1)
+				assert.Equal(t, want, result.Diagnosis()[0].Error())
+			}
+
+			getResult := Get(tt.value, tt.path)
+			require.Len(t, getResult.Diagnosis(), 1)
+			assert.Equal(t, want, getResult.Diagnosis()[0].Error())
+			assert.ErrorIs(t, getResult.Diagnosis()[0], tt.sentinel)
+
+			parsed := Parse(tt.value)
+			methodResult, methodErr := parsed.GetE(tt.path)
+			require.EqualError(t, methodErr, want)
+			assert.False(t, methodResult.Effective())
+			if tt.deployed {
+				require.Len(t, methodResult.Diagnosis(), 1)
+				assert.Equal(t, want, methodResult.Diagnosis()[0].Error())
+			}
+			methodGetResult := parsed.Get(tt.path)
+			require.Len(t, methodGetResult.Diagnosis(), 1)
+			assert.Equal(t, want, methodGetResult.Diagnosis()[0].Error())
+		})
+	}
+}
+
 func TestIssue33OriginalSelectorLocationFields(t *testing.T) {
 	value := map[string]interface{}{
 		"π": []issue33Inner{{}},
