@@ -865,15 +865,14 @@ func resolveSegment(t reflect.Type, v reflect.Value, segment string) (interface{
 }
 
 func selectorContainerKinds(t reflect.Type, v reflect.Value) (reflect.Kind, reflect.Kind) {
-	for t != nil {
+	for depth := 0; t != nil && depth <= maxResolveDepth; depth++ {
 		switch t.Kind() {
 		case reflect.Ptr:
-			t = t.Elem()
-			if v.IsValid() && v.Kind() == reflect.Ptr && !v.IsNil() {
-				v = v.Elem()
-			} else {
-				v = reflect.Value{}
+			if !v.IsValid() || v.Kind() != reflect.Ptr || v.IsNil() {
+				return reflect.Ptr, reflect.Invalid
 			}
+			t = t.Elem()
+			v = v.Elem()
 		case reflect.Interface:
 			if !v.IsValid() || v.IsNil() {
 				return reflect.Interface, reflect.Invalid
