@@ -196,23 +196,32 @@ func (r Result) Type() Type {
 	return r.typ
 }
 
-// Value returns the resolved value as-is. For an expanded Result (via '#') it
-// is a []interface{}; otherwise it is the single resolved value (possibly nil).
+// Value returns the resolved value. For an expanded Result (via '#') it returns
+// a fresh shallow copy of the []interface{} on every call. Otherwise it returns
+// the single resolved value as-is (possibly nil); a slice or map in that value
+// therefore retains its original ownership and is not copied.
 func (r Result) Value() interface{} {
+	if r.deployment {
+		if r.raw == nil {
+			return nil
+		}
+		return cloneTail(r.raw.([]interface{}), 0)
+	}
 	return r.raw
 }
 
 // Values returns the value as a slice: an expanded Result's elements directly,
 // an expandable single value (slice/array/map/struct) expanded, or otherwise a
-// one-element slice holding the value. Expansion errors are ignored; use
-// ValuesE to observe them.
+// one-element slice holding the value. Each call returns a fresh shallow slice;
+// element objects are not deep-copied. Expansion errors are ignored; use ValuesE
+// to observe them.
 func (r Result) Values() []interface{} {
 
 	if r.deployment {
 		if r.raw == nil {
 			return nil
 		}
-		return r.raw.([]interface{})
+		return cloneTail(r.raw.([]interface{}), 0)
 	}
 
 	v, t, _ := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw), 0)
@@ -222,15 +231,16 @@ func (r Result) Values() []interface{} {
 	return v
 }
 
-// ValuesE is the error-returning form of Values: it reports an error when a
-// single value could not be expanded.
+// ValuesE is the error-returning form of Values: it returns a fresh shallow
+// slice on every successful call and reports an error when a single value could
+// not be expanded.
 func (r Result) ValuesE() ([]interface{}, error) {
 
 	if r.deployment {
 		if r.raw == nil {
 			return nil, nil
 		}
-		return r.raw.([]interface{}), nil
+		return cloneTail(r.raw.([]interface{}), 0), nil
 	}
 
 	v, t, err := deployment(reflect.TypeOf(r.raw), reflect.ValueOf(r.raw), 0)
@@ -243,10 +253,16 @@ func (r Result) ValuesE() ([]interface{}, error) {
 	return v, nil
 }
 
-// Diagnosis returns the non-fatal errors collected while traversing. Each is
-// wrapped with %w, so errors.Is works against the package's sentinel errors.
+// Diagnosis returns a fresh shallow slice of the non-fatal errors collected
+// while traversing. Each error is wrapped with %w, so errors.Is works against
+// the package's sentinel errors.
 func (r Result) Diagnosis() []error {
-	return r.diagnosis
+	if r.diagnosis == nil {
+		return nil
+	}
+	diagnosis := make([]error, len(r.diagnosis))
+	copy(diagnosis, r.diagnosis)
+	return diagnosis
 }
 
 // Get applies path to a Result. When the Result is an expanded list (created

@@ -78,6 +78,8 @@ func main() {
 
 `Get`/`GetE` 及 `Result` 上的方法都不会修改入参,且每次调用各自分配返回切片,因此可以对同一个对象或同一个 `Result` 并发只读调用(前提是底层对象本身没有被其它地方并发修改)。
 
+`Result` 自有的切片通过访问器返回时会浅拷贝:`#` 展开后的 `Value()`、`Values()`、`ValuesE()` 以及 `Diagnosis()` 每次调用都返回独立的 slice backing,调用方修改切片元素不会污染 `Result` 或其它访问器结果。切片中的对象不会深拷贝,仍保持原有身份。非展开 `Value()` 返回解析出的值本身;若它是 slice 或 map,仍与调用方输入共享所有权。
+
 ## 错误处理
 
 - `Get` 不返回 error:无法解析时 `Result.Effective()` 返回 `false`,过程中的非致命错误记录在 `Result.Diagnosis()` 中。递归下钻深度受限,对抗性路径不会耗尽调用栈。
