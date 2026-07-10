@@ -37,6 +37,12 @@
 //   - C4: Values ignores expansion errors and returns a scalar as one element;
 //     ValuesE returns nil and ErrUnableExpand for that scalar.
 //
+// Resolution errors and Diagnosis entries wrap the package sentinel error, so
+// errors.Is identifies the underlying cause. Their bounded, redacted text names
+// only the dynamic type at the failing object and numeric byte offset, operation
+// index, and original selector byte length. It never includes selector or key
+// text or object values, and is at most 352 bytes.
+//
 // Concurrency: Get/GetE and the methods on a Result do not mutate their inputs
 // and are safe to call concurrently on the same object or Result, as long as
 // the underlying object is not being mutated elsewhere.
@@ -286,8 +292,9 @@ func (r Result) ValuesE() ([]interface{}, error) {
 }
 
 // Diagnosis returns a fresh shallow slice of the non-fatal errors collected
-// while traversing. Each error is wrapped with %w, so errors.Is works against
-// the package's sentinel errors.
+// while traversing. Each error follows the package's bounded, redacted context
+// contract and wraps its sentinel, so errors.Is identifies the underlying
+// cause.
 func (r Result) Diagnosis() []error {
 	if r.diagnosis == nil {
 		return nil
@@ -359,7 +366,9 @@ func (r Result) get(tokens []selectorToken, path string, budget *expansionBudget
 // error when no element matched path or when expansion exceeds its per-call
 // limit. Per contract C3, creating an empty expansion succeeds, while applying
 // another path to it returns ErrInvalidValue. Like Get, it never mutates r and
-// is safe to call concurrently.
+// is safe to call concurrently. Error locations start at this call's path, and
+// returned errors follow the package's bounded, redacted context contract while
+// preserving errors.Is against the underlying sentinel.
 func (r Result) GetE(path string) (Result, error) {
 	state := newResolutionState(path)
 	tokens, err := parseSelector(path)
@@ -432,7 +441,9 @@ func Parse(result interface{}) Result {
 
 // GetE resolves path against value and returns the Result together with an
 // error describing the first fatal failure (it is the error-returning form of
-// Get). See the package doc for the path syntax.
+// Get). Returned errors follow the package's bounded, redacted context contract
+// while preserving errors.Is against the underlying sentinel. See the package
+// doc for the path syntax and error fields.
 func GetE(value interface{}, path string) (Result, error) {
 	state := newResolutionState(path)
 	tokens, err := parseSelector(path)
@@ -652,10 +663,10 @@ func getE(value interface{}, tokens []selectorToken, path string, depth int, bud
 
 // Get resolves path against value and returns the Result. It does not return an
 // error: an unresolved path yields a Result whose Effective reports false, and
-// non-fatal problems are recorded in Result.Diagnosis. Expansion work and
-// result count are bounded, so adversarial '#' paths cannot exhaust memory or
-// CPU, while recursive reflection and expanded-list traversal are depth-bounded.
-// See the package doc for the path syntax.
+// non-fatal problems are recorded in Result.Diagnosis. Ordinary separator
+// descent is iterative, recursive reflection and expanded-list traversal are
+// depth-bounded, and expansion work and result count are bounded. See the
+// package doc for the path syntax.
 func Get(value interface{}, path string) Result {
 	state := newResolutionState(path)
 	tokens, err := parseSelector(path)

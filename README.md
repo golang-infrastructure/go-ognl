@@ -1,40 +1,42 @@
-# go_ognl
+# go-ognl
 
 ## 介绍
 
-go_ognl 允许您通过 ognl 表达式从任意 Go 对象中取值，无需提前定义结构体或做反序列化——直接传入对象和路径即可。
+go-ognl 允许您通过 OGNL 风格的路径表达式从 Go 对象图中取值，无需先将对象转换成其它数据格式。
 
 ## 特性
 
-1. 使用方便,跟 json parser 一样方便;
-2. 不论是私有属性还是公有属性都可以访问;
-3. 支持层级展开,支持数组展开;
-4. 轻量级,无特殊依赖;
+1. 支持 struct、map、slice、array、pointer 和 interface 的层级访问；
+2. 可以读取导出和未导出的 struct 字段；
+3. 支持对当前值进行一层或多层展开；
+4. 包的非测试代码仅依赖 Go 标准库。
 
 Ps: 实现依赖反射(并使用 `unsafe` 读取私有字段),相比手写字段访问会有性能损耗。
 
 ## 安装
 
-要在您的 Go 项目中使用 Go-OGNL，您需要先安装和设置好 Go 环境。然后，您可以使用以下 go get 命令进行安装：
+项目的 canonical module path 是 `github.com/golang-infrastructure/go-ognl`。截至 2026-07-10，latest release 仍是声明旧 module path 的 `v0.0.3`，因此 canonical path 的 `@latest` 尚不可用。`v0.1.0` 只是当前候选版本；若 owner 批准并发布该版本，再使用：
 
 ```shell
-go get github.com/golang-infrastructure/go-ognl
+go get github.com/golang-infrastructure/go-ognl@v0.1.0
 ```
+
+发布前置条件和发布后的 `@latest` 验证步骤见 [RELEASE.md](RELEASE.md)。
 
 ## 使用
 
-1. 导入go_ognl
+1. 使用 `ognl` 作为导入名：
    ```go
-   import "github.com/golang-infrastructure/go-ognl"
+   import ognl "github.com/golang-infrastructure/go-ognl"
    ```
-2. 可以直接使用
+2. 直接查询：
    ```go
-   go_ognl.Get(obj,path)
+   result := ognl.Get(obj, path)
    ```
-3. 也可以直接调用parse方法,在此基础上可以实现多次调用or链式调用
+3. 使用 `Parse` 后重复或链式查询：
    ```go
-   parser := go_ognl.Parse(obj)
-   parser.Get(path)
+   parsed := ognl.Parse(obj)
+   result := parsed.Get(path)
    ```
 
 ## 完整示例
@@ -44,29 +46,36 @@ package main
 
 import (
 	"fmt"
-	"github.com/golang-infrastructure/go-ognl"
+
+	ognl "github.com/golang-infrastructure/go-ognl"
 )
 
-type Test struct {
-	First  string
-	Middle *Test
-	last   int
-}
-
 func main() {
-	t1 := &Test{
-		First: "first",
-		last:  7,
+	type User struct {
+		Name  string
+		Roles []string
 	}
-	t1.Middle = t1
-	fmt.Println(ognl.Get(t1, "First").Value())                     // first
-	fmt.Println(ognl.Get(t1, "last").Value())                      // 7
-	fmt.Println(ognl.Get(t1, "Middle.Middle.Middle.last").Value()) // 7
-	fmt.Println(ognl.Get(t1, "#").Value())                         // []interface{}{"first",t1,7}
-	fmt.Println(ognl.Get(t1, "##").Value())                        // []interface{}{"first","first",t1,7,7}
-	fmt.Println(ognl.Get(t1, "##").Values())                       // []interface{}{"first","first",t1,7,7}
+
+	user := User{Name: "alice", Roles: []string{"admin", "maintainer"}}
+	fmt.Println(ognl.Get(user, "Name").Value())
+
+	parsed := ognl.Parse(user)
+	fmt.Println(parsed.Get("Roles.1").Value())
+
+	users := []User{{Name: "alice"}, {Name: "bob"}}
+	fmt.Println(ognl.Get(users, "#.Name").Values())
 }
 ```
+
+输出：
+
+```text
+alice
+maintainer
+[alice bob]
+```
+
+仓库中的可编译外部包示例 `Example` 覆盖相同的 API 调用顺序和输出；README 片段额外包含可直接运行的 `package main` 包装。
 
 ## 关键词说明
 
@@ -88,10 +97,10 @@ func main() {
 ## 错误处理
 
 - `Get` 不返回 error：无法解析时 `Result.Effective()` 返回 `false`，过程中的非致命错误记录在 `Result.Diagnosis()` 中。非法选择器会返回 `Type()==Invalid`、无部分结果，并在 Diagnosis 中包装 `ErrInvalidSelector`。
-- `GetE` 返回首个致命错误。非法选择器会在遍历前失败，并返回可由 `errors.Is(err, ognl.ErrInvalidSelector)` 识别的错误和无部分值的 Invalid Result。
-- 反射递归和展开列表的递归遍历有深度上限，长路径不会按路径段无限增长调用栈。
-- 每次 `Get`/`GetE`（包括 `Result` 上的同名方法）的 `#` 展开最多执行 100,000 次操作，并在整个返回结果树中累计保留 10,000 个结果。超限时 `Get` 返回无效结果并在 `Diagnosis()` 中记录 `ErrExpansionLimit`，`GetE` 返回可由 `errors.Is` 识别的 `ErrExpansionLimit`，且不返回部分展开结果。
-- 所有错误都用 `%w` 包装,可用 `errors.Is(err, ognl.ErrInvalidValue)` 等判断;错误信息**只包含被遍历对象的类型名,不含其值**,避免泄露密码 / token 等敏感数据。
+- `GetE` 返回致命错误。对已展开的结果，单个分支错误进入 `Diagnosis()`；只要至少一个分支匹配，调用仍可成功。所有分支都失败时不返回部分值，并返回输入顺序中的第一个失败上下文。非法选择器会在遍历前失败，并返回可由 `errors.Is(err, ognl.ErrInvalidSelector)` 识别的错误和无部分值的 Invalid Result。
+- 普通 `.` 下钻使用迭代处理；匿名字段、pointer/interface 展开和 `#.` 等递归分支有深度上限。限制的是递归深度，不是 path 字符串长度。
+- 每次 `Get`/`GetE`（包括 `Result` 上的同名方法）的 `#` 展开最多执行 100,000 次操作，并在整个返回结果树中累计保留 10,000 个结果。超限时 `Get` 返回无效结果并在 `Diagnosis()` 中记录 `ErrExpansionLimit`；`GetE` 返回可由 `errors.Is` 识别的 `ErrExpansionLimit`，且不暴露部分结果。
+- 对外错误和诊断保留 sentinel unwrap 链，可用 `errors.Is` 检查。错误文本只包含安全编码的实际失败动态类型和数字位置字段 `offset`、`op`、`total_len`，不包含 selector、解码后的 key 或任何对象值；完整文本最多 352 bytes。
 
 ## Result 兼容性契约
 
@@ -123,11 +132,11 @@ func main() {
 - `GetMany(value interface{}, path ...string) []Result`
 - `Parse(result interface{}) Result`
 
-1. Result.Effective() // 判断值是否有效
-2. Result.Type() // 获取遍历类型元数据(见 C1)
-3. Result.Value() // 获取值
-4. Result.Values() // 获取值列表,如果是数组,则展开数组,如果是单个值,那么数组只会有一个
-5. Result.ValuesE() // 带有错误返回
-6. Result.Diagnosis() // 获取诊断信息
-7. Result.Get(path)
-8. Result.GetE(path) // 支持链式调用
+1. `Result.Effective()`：判断结果是否包含可用值。
+2. `Result.Type()`：获取遍历类型元数据，不一定等于 `Value()` 的动态 Go 类型（见 C1）。
+3. `Result.Value()`：非展开结果返回原值；展开结果每次返回独立 backing 的浅拷贝 `[]interface{}`。
+4. `Result.Values()`：每次返回浅拷贝列表；可展开 slice、array、map 或 struct，标量返回单元素列表，展开错误会被忽略。
+5. `Result.ValuesE()`：`Values` 的 error 返回版本；成功时同样返回浅拷贝。
+6. `Result.Diagnosis()`：每次返回遍历中非致命错误列表的浅拷贝。
+7. `Result.Get(path)`：继续查询当前结果；展开结果保持 flat-map 语义。
+8. `Result.GetE(path)`：继续查询当前结果并按上述规则返回致命错误。
