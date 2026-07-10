@@ -892,8 +892,9 @@ func expansionLimitResult(result Result, err error, object interface{}, path str
 }
 
 // maxResolveDepth bounds every recursive descent in this package: parseString
-// and parseInt (pointer deref + anonymous-field promotion), deployment (pointer
-// /interface deref), and the get/getE expansion of "#." segments. Cyclic data
+// (pointer deref + anonymous-field promotion), parseInt (pointer deref),
+// deployment (pointer/interface deref), and the get/getE expansion of "#."
+// segments. Cyclic data
 // (a self-pointing embedded field, a self-referential interface) or an
 // adversarial "#.#.#..." path would otherwise recurse forever and hit an
 // unrecoverable fatal "stack overflow". Past the cap the walk stops with an
@@ -1034,15 +1035,6 @@ func parseInt(t reflect.Type, v reflect.Value, tokenValue int, depth int) (inter
 		value = cp.Field(tokenValue)
 
 		res := reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Interface()
-
-		rt := t.Field(tokenValue)
-
-		if rt.Anonymous {
-			nv, nt, ne := parseInt(reflect.TypeOf(res), reflect.ValueOf(res), tokenValue, depth+1)
-			if ne == nil && nt != Invalid {
-				return nv, nt, ne
-			}
-		}
 
 		return res, Type(value.Kind()), nil
 
