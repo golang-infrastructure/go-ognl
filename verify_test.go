@@ -260,6 +260,15 @@ func TestIssue25_GetEFailureIsInvalid(t *testing.T) {
 	assert.Nil(t, r.Value())
 }
 
+func TestIssue25_GetENonNilErrorFailureIsInvalid(t *testing.T) {
+	r, err := GetE(42, "Missing")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidStructure))
+	assert.Equal(t, Invalid, r.Type())
+	assert.False(t, r.Effective())
+	assert.Nil(t, r.Value())
+}
+
 func TestIssue25_GetEExpansionAllFailures(t *testing.T) {
 	users := []issue25User{{Name: "a"}}
 
