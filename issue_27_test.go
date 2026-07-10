@@ -9,6 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// These literals intentionally duplicate the documented contract instead of
+// referencing production constants, so implementation drift makes tests fail.
+const (
+	issue27MaxExpansionOperations = 100_000
+	issue27MaxExpansionResults    = 10_000
+)
+
 type issue27Node struct {
 	Left  *issue27Node
 	Right *issue27Node
@@ -64,17 +71,17 @@ func TestIssue27_ExpansionBudgetBoundsExponentialHash(t *testing.T) {
 }
 
 func TestIssue27_ExpansionOutputBoundary(t *testing.T) {
-	exactInput := make([]int, maxExpansionResults)
+	exactInput := make([]int, issue27MaxExpansionResults)
 	exact := Get(exactInput, "#")
 	require.True(t, exact.Effective())
-	require.Len(t, exact.Values(), maxExpansionResults)
+	require.Len(t, exact.Values(), issue27MaxExpansionResults)
 	assertNoExpansionLimitDiagnosis(t, exact)
 
 	exactE, err := GetE(exactInput, "#")
 	require.NoError(t, err)
-	require.Len(t, exactE.Values(), maxExpansionResults)
+	require.Len(t, exactE.Values(), issue27MaxExpansionResults)
 
-	overInput := make([]int, maxExpansionResults+1)
+	overInput := make([]int, issue27MaxExpansionResults+1)
 	requireExpansionLimitDiagnosis(t, Get(overInput, "#"))
 
 	overE, err := GetE(overInput, "#")
@@ -85,7 +92,7 @@ func TestIssue27_ExpansionOutputBoundary(t *testing.T) {
 }
 
 func TestIssue27_AggregateOutputLimitDiscardsPartialResult(t *testing.T) {
-	chunkSize := maxExpansionResults/2 + 1
+	chunkSize := issue27MaxExpansionResults/2 + 1
 	input := []interface{}{make([]int, chunkSize), make([]int, chunkSize)}
 
 	requireExpansionLimitDiagnosis(t, Get(input, "##"))
@@ -103,7 +110,7 @@ func TestIssue27_ExpansionOperationBoundary(t *testing.T) {
 	// budget from the output budget.
 	cycle := make([]interface{}, 1)
 	cycle[0] = cycle
-	exactPath := strings.Repeat("#", maxExpansionOperations/2)
+	exactPath := strings.Repeat("#", issue27MaxExpansionOperations/2)
 	exact := Get(cycle, exactPath)
 	require.True(t, exact.Effective())
 	require.Len(t, exact.Values(), 1)
@@ -155,7 +162,7 @@ func TestIssue27_ResultMethodsShareOneCallBudget(t *testing.T) {
 
 	// Each item alone stays below the operation limit. Sharing one budget across
 	// both items is what makes the Result.Get/Result.GetE call exceed the cap.
-	path := strings.Repeat("#", maxExpansionOperations/4+1)
+	path := strings.Repeat("#", issue27MaxExpansionOperations/4+1)
 	requireExpansionLimitDiagnosis(t, base.Get(path))
 
 	result, err := base.GetE(path)
@@ -163,4 +170,54 @@ func TestIssue27_ResultMethodsShareOneCallBudget(t *testing.T) {
 	assert.ErrorIs(t, err, ErrExpansionLimit)
 	assert.False(t, result.Effective())
 	assert.Empty(t, result.Values())
+}
+
+func issue27NestedFanoutInput() []interface{} {
+	input := make([]interface{}, 10)
+	for i := range input {
+		input[i] = make([]int, 9_000)
+	}
+	return input
+}
+
+func TestIssue27_GetAccumulatesRetainedResults(t *testing.T) {
+	requireExpansionLimitDiagnosis(t, Get(issue27NestedFanoutInput(), "#.#"))
+}
+
+func TestIssue27_GetEAccumulatesRetainedResults(t *testing.T) {
+	result, err := GetE(issue27NestedFanoutInput(), "#.#")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrExpansionLimit)
+	assert.False(t, result.Effective())
+	assert.Empty(t, result.Values())
+}
+
+func TestIssue27_ResultGetAccumulatesRetainedResults(t *testing.T) {
+	requireExpansionLimitDiagnosis(t, Parse(issue27NestedFanoutInput()).Get("#.#"))
+}
+
+func TestIssue27_ResultGetEAccumulatesRetainedResults(t *testing.T) {
+	result, err := Parse(issue27NestedFanoutInput()).GetE("#.#")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrExpansionLimit)
+	assert.False(t, result.Effective())
+	assert.Empty(t, result.Values())
+}
+
+func TestIssue27_PublicCallsHaveIndependentResultBudgets(t *testing.T) {
+	input := make([]int, 9_000)
+
+	for i := 0; i < 2; i++ {
+		require.Len(t, Get(input, "#").Values(), 9_000)
+
+		resultE, err := GetE(input, "#")
+		require.NoError(t, err)
+		require.Len(t, resultE.Values(), 9_000)
+
+		require.Len(t, Parse(input).Get("#").Values(), 9_000)
+
+		resultMethodE, err := Parse(input).GetE("#")
+		require.NoError(t, err)
+		require.Len(t, resultMethodE.Values(), 9_000)
+	}
 }
