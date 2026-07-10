@@ -462,14 +462,14 @@ func getE(value interface{}, path string, depth int) (Result, error) {
 				} else {
 					nv, tpe, err = parseString(tp, tv, sv, 0)
 				}
+				result.raw = nv
+				result.typ = tpe
 				if err != nil {
 					return result, wrapError(err, value, sv)
 				}
 				if tpe == Invalid {
 					return result, wrapError(ErrInvalidValue, value, sv)
 				}
-				result.raw = nv
-				result.typ = tpe
 			}
 		}
 	}
