@@ -849,6 +849,9 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 	case reflect.Map:
 		var ret []interface{}
 		var tp Type = Interface
+		if v.Len() > 0 {
+			ret = make([]interface{}, 0, v.Len())
+		}
 
 		iter := v.MapRange()
 		for iter.Next() {
@@ -862,6 +865,9 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 	case reflect.Slice, reflect.Array:
 		var ret []interface{}
 		var tp Type = Interface
+		if v.Len() > 0 {
+			ret = make([]interface{}, 0, v.Len())
+		}
 
 		for i := 0; i < v.Len(); i++ {
 			if !v.Index(i).IsValid() {
@@ -876,6 +882,10 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 
 	case reflect.Struct:
 		var ret []interface{}
+		var cp reflect.Value
+		if v.NumField() > 0 {
+			ret = make([]interface{}, 0, v.NumField())
+		}
 
 		for i := 0; i < v.NumField(); i++ {
 			value := v.Field(i)
@@ -886,8 +896,10 @@ func deployment(t reflect.Type, v reflect.Value, depth int) ([]interface{}, Type
 			if value.CanInterface() {
 				ret = append(ret, value.Interface())
 			} else {
-				cp := reflect.New(v.Type()).Elem()
-				cp.Set(v)
+				if !cp.IsValid() {
+					cp = reflect.New(v.Type()).Elem()
+					cp.Set(v)
+				}
 				value = cp.Field(i)
 
 				ret = append(ret, reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Interface())
