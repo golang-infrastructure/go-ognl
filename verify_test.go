@@ -79,6 +79,20 @@ func TestP0_3_HashExpandsResolvedValue(t *testing.T) {
 	assert.ElementsMatch(t, []interface{}{"alice", "bob"}, names)
 }
 
+func TestP0_3_GetEHashExpandsResolvedValue(t *testing.T) {
+	value := map[string]interface{}{
+		"users": []interface{}{
+			map[string]interface{}{"name": "alice"},
+			map[string]interface{}{"name": "bob"},
+		},
+		"other": 1,
+	}
+
+	result, err := GetE(value, "users#.name")
+	require.NoError(t, err)
+	assert.Equal(t, []interface{}{"alice", "bob"}, result.Values())
+}
+
 // P0-4: a map keyed by a defined type (type K string / type K int) used to
 // panic inside reflect.Value.MapIndex.
 type namedKey string
@@ -142,6 +156,52 @@ func TestP0_5_ResultGet_NoSequentialCorruption(t *testing.T) {
 	require.Equal(t, []interface{}{10, 20, 30}, b.Values())
 
 	// With the old list[ln:] aliasing, b's appends overwrite a's slice in place.
+	assert.Equal(t, []interface{}{1, 2, 3}, a.Values(), "a must be unaffected by b")
+}
+
+func TestP0_5_ResultGetE_Concurrent(t *testing.T) {
+	type item struct {
+		Name string
+		Tags []string
+	}
+	value := []item{
+		{Name: "a", Tags: []string{"x"}},
+		{Name: "b", Tags: []string{"u"}},
+		{Name: "c", Tags: []string{"p"}},
+	}
+	r := Get(value, "#")
+	require.True(t, r.Effective())
+
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			path := "Name"
+			if i%2 == 0 {
+				path = "Tags"
+			}
+			_, _ = r.GetE(path)
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestP0_5_ResultGetE_NoSequentialCorruption(t *testing.T) {
+	big := make([]interface{}, 3, 64)
+	big[0] = map[string]interface{}{"k": 1, "j": 10}
+	big[1] = map[string]interface{}{"k": 2, "j": 20}
+	big[2] = map[string]interface{}{"k": 3, "j": 30}
+	r := Result{deployment: true, raw: big, typ: Interface}
+
+	a, err := r.GetE("k")
+	require.NoError(t, err)
+	require.Equal(t, []interface{}{1, 2, 3}, a.Values())
+
+	b, err := r.GetE("j")
+	require.NoError(t, err)
+	require.Equal(t, []interface{}{10, 20, 30}, b.Values())
+
 	assert.Equal(t, []interface{}{1, 2, 3}, a.Values(), "a must be unaffected by b")
 }
 
