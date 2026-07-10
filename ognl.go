@@ -15,6 +15,22 @@
 //     Expansion work and result count are bounded per Get/GetE call.
 //   - Use "\\" to escape a literal "." inside a key, e.g. "Foo\\.Bar".
 //
+// Result compatibility contract:
+//
+//   - C1: Type is traversal metadata, not necessarily the dynamic kind of
+//     Value. Parse/empty paths start at Interface; resolved non-expanded
+//     segments use the resolved kind; expansion uses the kind reported by the
+//     expansion, with Interface for an empty expansion. Mapping an already
+//     expanded Result does not recompute Type.
+//   - C2: Effective is false for Invalid and empty expanded results. Otherwise
+//     it tests whether the stored interface is nil, so an interface containing
+//     a typed nil pointer, map or slice is effective.
+//   - C3: the first expansion of an empty collection succeeds with an
+//     ineffective Result. A further segment or expansion has no matches, so
+//     Get stays ineffective and GetE returns ErrInvalidValue.
+//   - C4: Values ignores expansion errors and returns a scalar as one element;
+//     ValuesE returns nil and ErrUnableExpand for that scalar.
+//
 // Concurrency: Get/GetE and the methods on a Result do not mutate their inputs
 // and are safe to call concurrently on the same object or Result, as long as
 // the underlying object is not being mutated elsewhere.
@@ -53,10 +69,11 @@ var ErrInvalidValue = errors.New("invalid value")
 // or result limit for one Get/GetE call.
 var ErrExpansionLimit = errors.New("expansion limit exceeded")
 
-// Type classifies a Result's value. Its constants are declared in the same
-// order as the reflect.Kind constants, so Type(v.Kind()) is a safe conversion
-// that preserves the integer value (a test locks this invariant). Use the
-// Result.Type accessor rather than relying on the underlying integer.
+// Type is traversal metadata returned by Result.Type, not necessarily the
+// dynamic Go kind of Result.Value. Its constants are declared in the same order
+// as the reflect.Kind constants, so Type(v.Kind()) is a safe conversion that
+// preserves the integer value (a test locks this invariant). Use the Result.Type
+// accessor rather than relying on the underlying integer.
 type Type int
 
 const (
@@ -153,9 +170,9 @@ func (t Type) String() string {
 // Diagnosis, and descend further with Get/GetE (chaining). The zero value is an
 // invalid Result.
 type Result struct {
-	// typ is the value's Type. When the path used '#', the Result is expanded:
+	// typ is traversal metadata. When the path used '#', the Result is expanded:
 	// raw is a []interface{} and typ reflects the element kind reported by
-	// deployment (often Interface, e.g. for map[string]interface{}).
+	// deployment (often Interface, e.g. for map[string]interface{}). See C1.
 	typ Type
 
 	// raw is the resolved value. When expanded (see deployment) it is a
@@ -175,9 +192,10 @@ type Result struct {
 	retainedResults int
 }
 
-// Effective reports whether the Result carries a usable value: its Type is not
-// Invalid, and (for an expanded Result) the list is non-empty, or (otherwise)
-// the value is non-nil.
+// Effective reports whether the Result carries a usable value (contract C2):
+// its Type is not Invalid, and an expanded Result has at least one element, or
+// an unexpanded Result's stored interface is non-nil. An interface containing a
+// typed nil pointer, map or slice is therefore effective.
 func (r Result) Effective() bool {
 	if r.Type() == Invalid {
 		return false
@@ -191,7 +209,10 @@ func (r Result) Effective() bool {
 	return r.raw != nil
 }
 
-// Type returns the value's Type (Invalid if nothing was resolved).
+// Type returns traversal metadata (contract C1), not necessarily the dynamic
+// kind of Value. Parse and empty paths start at Interface; resolved
+// non-expanded segments and expansions update the metadata as described in the
+// package contract. Invalid means nothing was resolved.
 func (r Result) Type() Type {
 	return r.typ
 }
@@ -213,8 +234,9 @@ func (r Result) Value() interface{} {
 // Values returns the value as a slice: an expanded Result's elements directly,
 // an expandable single value (slice/array/map/struct) expanded, or otherwise a
 // one-element slice holding the value. Each call returns a fresh shallow slice;
-// element objects are not deep-copied. Expansion errors are ignored; use ValuesE
-// to observe them.
+// element objects are not deep-copied. Per contract C4, expansion errors are
+// ignored, so a scalar is returned as one element; use ValuesE to observe the
+// error.
 func (r Result) Values() []interface{} {
 
 	if r.deployment {
@@ -231,9 +253,9 @@ func (r Result) Values() []interface{} {
 	return v
 }
 
-// ValuesE is the error-returning form of Values: it returns a fresh shallow
-// slice on every successful call and reports an error when a single value could
-// not be expanded.
+// ValuesE is the error-returning form of Values (contract C4): it returns a
+// fresh shallow slice on every successful call. When a scalar cannot be
+// expanded, it returns nil values and an error wrapping ErrUnableExpand.
 func (r Result) ValuesE() ([]interface{}, error) {
 
 	if r.deployment {
@@ -318,7 +340,9 @@ func (r Result) get(path string, budget *expansionBudget) Result {
 
 // GetE is the error-returning form of Get. On an expanded Result it returns an
 // error when no element matched path or when expansion exceeds its per-call
-// limit. Like Get, it never mutates r and is safe to call concurrently.
+// limit. Per contract C3, creating an empty expansion succeeds, while applying
+// another path to it returns ErrInvalidValue. Like Get, it never mutates r and
+// is safe to call concurrently.
 func (r Result) GetE(path string) (Result, error) {
 	return r.getE(path, &expansionBudget{})
 }
