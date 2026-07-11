@@ -1197,6 +1197,18 @@ func parseString(t reflect.Type, v reflect.Value, value string, depth int) (inte
 		res := reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem().Interface()
 
 		if rt.Anonymous {
+			embeddedType := reflect.TypeOf(res)
+			seenTypes := make(map[reflect.Type]struct{})
+			for embeddedType != nil && embeddedType.Kind() == reflect.Ptr {
+				if _, seen := seenTypes[embeddedType]; seen {
+					break
+				}
+				seenTypes[embeddedType] = struct{}{}
+				embeddedType = embeddedType.Elem()
+			}
+			if embeddedType == t {
+				return res, Type(rv.Kind()), t, nil
+			}
 			nv, nt, failureType, ne := parseString(reflect.TypeOf(res), reflect.ValueOf(res), value, depth+1)
 			if ne == nil && nt != Invalid {
 				return nv, nt, failureType, ne
