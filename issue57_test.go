@@ -1,6 +1,9 @@
 package ognl_test
 
 import (
+	"context"
+	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -8,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const issue57PointerCycleScenario = "GO_OGNL_ISSUE57_POINTER_CYCLE_SCENARIO"
 
 type Issue57Node struct {
 	*Issue57Node
@@ -69,31 +74,34 @@ func TestIssue57RecursiveAnonymousNamePreservesTypedNil(t *testing.T) {
 }
 
 func TestIssue57AnonymousInterfaceNamedPointerCycleReturns(t *testing.T) {
+	if os.Getenv(issue57PointerCycleScenario) != "" {
+		runIssue57AnonymousInterfaceNamedPointerCycle(t)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestIssue57AnonymousInterfaceNamedPointerCycleReturns$", "-test.count=1")
+	cmd.Env = append(os.Environ(), issue57PointerCycleScenario+"=child")
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("anonymous interface lookup did not return before timeout; child output:\n%s", output)
+	}
+	require.NoError(t, err, "anonymous interface lookup child failed; output:\n%s", output)
+}
+
+func runIssue57AnonymousInterfaceNamedPointerCycle(t *testing.T) {
 	var pointer Issue57NamedPointerCycle
 	value := issue57AnonymousInterfaceHolder{Issue57AnonymousValue: pointer}
-	type outcome struct {
-		result  ognl.Result
-		resultE ognl.Result
-		err     error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		result := ognl.Get(value, "Issue57AnonymousValue")
-		resultE, err := ognl.GetE(value, "Issue57AnonymousValue")
-		done <- outcome{result: result, resultE: resultE, err: err}
-	}()
-
-	select {
-	case got := <-done:
-		require.NoError(t, got.err)
-		for _, result := range []ognl.Result{got.result, got.resultE} {
-			require.Equal(t, ognl.Interface, result.Type())
-			assert.True(t, result.Effective())
-			actual, ok := result.Value().(Issue57NamedPointerCycle)
-			require.True(t, ok)
-			assert.Nil(t, actual)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("anonymous interface lookup did not return for a named pointer type cycle")
+	result := ognl.Get(value, "Issue57AnonymousValue")
+	resultE, err := ognl.GetE(value, "Issue57AnonymousValue")
+	require.NoError(t, err)
+	for _, result := range []ognl.Result{result, resultE} {
+		require.Equal(t, ognl.Interface, result.Type())
+		assert.True(t, result.Effective())
+		actual, ok := result.Value().(Issue57NamedPointerCycle)
+		require.True(t, ok)
+		assert.Nil(t, actual)
 	}
 }
