@@ -316,6 +316,9 @@ func (r Result) Get(path string) Result {
 		diagnosis = append(diagnosis, wrapResolutionError(err, reflect.TypeOf(r.raw), state.selectorError(path)))
 		return Result{typ: Invalid, diagnosis: diagnosis}
 	}
+	if raw, ok := r.raw.([]interface{}); r.deployment && ok && len(raw) == 0 && onlySelectorSeparators(tokens) {
+		return r
+	}
 	return r.get(tokens, path, &expansionBudget{}, state)
 }
 
@@ -374,6 +377,9 @@ func (r Result) GetE(path string) (Result, error) {
 	tokens, err := parseSelector(path)
 	if err != nil {
 		return Result{typ: Invalid, diagnosis: append([]error(nil), r.diagnosis...)}, wrapResolutionError(err, reflect.TypeOf(r.raw), state.selectorError(path))
+	}
+	if raw, ok := r.raw.([]interface{}); r.deployment && ok && len(raw) == 0 && onlySelectorSeparators(tokens) {
+		return r, nil
 	}
 	return r.getE(tokens, path, &expansionBudget{}, state)
 }
@@ -450,6 +456,9 @@ func GetE(value interface{}, path string) (Result, error) {
 	if err != nil {
 		return Result{typ: Invalid}, wrapResolutionError(err, reflect.TypeOf(value), state.selectorError(path))
 	}
+	if onlySelectorSeparators(tokens) {
+		tokens = nil
+	}
 	return getE(value, tokens, path, 0, &expansionBudget{}, state)
 }
 
@@ -476,6 +485,12 @@ func getE(value interface{}, tokens []selectorToken, path string, depth int, bud
 	for index, token := range tokens {
 		if token.kind == selectorSeparatorToken {
 			remaining := tokens[index+1:]
+			if onlySelectorSeparators(remaining) {
+				if !result.deployment {
+					result.typ = Interface
+				}
+				continue
+			}
 			location := state.firstOperation(remaining)
 			if result.deployment {
 				list := result.raw.([]interface{})
@@ -673,6 +688,9 @@ func Get(value interface{}, path string) Result {
 	if err != nil {
 		return Result{typ: Invalid, diagnosis: []error{wrapResolutionError(err, reflect.TypeOf(value), state.selectorError(path))}}
 	}
+	if onlySelectorSeparators(tokens) {
+		tokens = nil
+	}
 	return get(value, tokens, path, 0, &expansionBudget{}, state)
 }
 
@@ -702,6 +720,12 @@ func get(value interface{}, tokens []selectorToken, path string, depth int, budg
 	for index, token := range tokens {
 		if token.kind == selectorSeparatorToken {
 			remaining := tokens[index+1:]
+			if onlySelectorSeparators(remaining) {
+				if !result.deployment {
+					result.typ = Interface
+				}
+				continue
+			}
 			location := state.firstOperation(remaining)
 			if result.deployment {
 				list := result.raw.([]interface{})
