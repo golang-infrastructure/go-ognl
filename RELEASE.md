@@ -1,19 +1,19 @@
 # v0.1.0 release readiness
 
 `v0.1.0` is the current candidate name for the first release using the
-canonical module path `github.com/golang-infrastructure/go-ognl`. The owner has
-not yet approved the version, timing, or proposed MIT copyright holder/year.
-This file is a release checklist, not evidence that the version has been tagged
-or published.
+canonical module path `github.com/golang-infrastructure/go-ognl`. On
+2026-07-11, the owner approved the current MIT `LICENSE` and its
+`Copyright (c) 2022 Golang Infrastructure` notice. The version and publication
+timing remain deferred. This PR does not create a tag or publish a release.
+Merging this PR does not authorize or trigger either action.
 
 ## Planned release notes
 
 - Establish the canonical module path for tagged consumers if this candidate is
   approved and published.
-- Publish the project under the license and copyright notice approved by the
-  owner; `LICENSE` currently contains an MIT proposal, not an approval record.
-- Ship a compiled external-package example that covers the README's API scenario
-  and expected output.
+- Carry the owner-approved MIT `LICENSE` and copyright notice into the release.
+- Ship the README API scenario whose complete Go program and expected output are
+  extracted, compiled, run, and compared by `TestREADMEExample`.
 - Include the accepted Result compatibility contract, deterministic selector
   grammar, and bounded redacted resolution-error context already present in the
   candidate baseline.
@@ -31,11 +31,11 @@ or published.
   error-context contracts are reflected in README and GoDoc.
 - [x] Confirmed the published tags are still `v0.0.1` through `v0.0.3`, with
   `v0.0.3` still the latest release.
-- [x] Ran the example, Result/selector/error-context contract, full, race, vet,
-  checkptr, Go 1.18, godoc, formatting, and module gates on this final reconciled
-  Draft on 2026-07-10. The exact tag commit must run them again.
-- [ ] Owner approves the proposed license, copyright holder, and year in
-  `LICENSE`.
+- [x] Ran the README example, Result/selector/error-context contract, full, race,
+  vet, checkptr, Go 1.18, godoc, formatting, and module gates on this reconciled
+  Draft on 2026-07-11. The exact tag commit must run them again.
+- [x] Owner approved the current MIT `LICENSE`, copyright holder, and year on
+  2026-07-11.
 - [ ] Owner decides whether the first canonical-path release is `v0.1.0` and
   when it should be published.
 
@@ -54,7 +54,7 @@ or published.
   go test ./... -count=1
   go test -race ./... -count=1
   go test -gcflags=all=-d=checkptr=2 ./... -count=1
-  go test ./... -run '^Example$' -count=1
+  go test ./... -run '^TestREADMEExample$' -count=1
   ```
 
 - [ ] Review the final diff and release notes against the exact commit to tag.
@@ -86,8 +86,10 @@ or published.
 
 ## Documentation audit baseline
 
-The release-readiness claims above were reconciled on 2026-07-10 against
-`main` commit `fa635ecf5c897367a68c7000bde170848085538d`, `go.mod`, `ognl.go`, the
-test suite, closed issues #29/#32/#33, merged PRs #42/#47/#49, and published
-tags `v0.0.1` through `v0.0.3`. Re-run this audit against the exact final commit
-before creating any release tag.
+The license decision above was reconciled on 2026-07-11 from the owner's
+explicit approval of the current `LICENSE`. The remaining release-readiness
+claims were reconciled on 2026-07-11 against `main` commit
+`fa635ecf5c897367a68c7000bde170848085538d`, `go.mod`, `ognl.go`, the test suite,
+closed issues #29/#32/#33, merged PRs #42/#47/#49, and published tags `v0.0.1`
+through `v0.0.3`. Re-run this audit against the exact final commit before
+creating any release tag.

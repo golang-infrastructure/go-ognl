@@ -15,7 +15,7 @@ Ps: 实现依赖反射(并使用 `unsafe` 读取私有字段),相比手写字段
 
 ## 安装
 
-项目的 canonical module path 是 `github.com/golang-infrastructure/go-ognl`。截至 2026-07-10，latest release 仍是声明旧 module path 的 `v0.0.3`，因此 canonical path 的 `@latest` 尚不可用。`v0.1.0` 只是当前候选版本；若 owner 批准并发布该版本，再使用：
+项目的 canonical module path 是 `github.com/golang-infrastructure/go-ognl`。截至 2026-07-11，latest release 仍是声明旧 module path 的 `v0.0.3`，因此 canonical path 的 `@latest` 尚不可用。Owner 已批准当前 [`LICENSE`](LICENSE)（MIT；Copyright (c) 2022 Golang Infrastructure），但版本号与发布时间仍 deferred，本 PR 合并后也不创建 tag 或 release。`v0.1.0` 只是当前候选版本；若 owner 后续批准并发布该版本，再使用：
 
 ```shell
 go get github.com/golang-infrastructure/go-ognl@v0.1.0
