@@ -146,3 +146,53 @@ func TestResultContract_C4ScalarValues(t *testing.T) {
 	assert.True(t, errors.Is(err, ognl.ErrUnableExpand))
 	assert.Nil(t, values)
 }
+
+func TestResultContract_InvalidValuesAreEmpty(t *testing.T) {
+	invalidSelectorE, err := ognl.GetE(map[string]int{"present": 1}, `missing\`)
+	require.Error(t, err)
+	missingE, err := ognl.GetE(resultContractUser{Name: "alice"}, "Missing")
+	require.Error(t, err)
+	outOfRangeE, err := ognl.GetE([]int{1}, "2")
+	require.Error(t, err)
+
+	tests := []struct {
+		name   string
+		result ognl.Result
+	}{
+		{name: "zero Result", result: ognl.Result{}},
+		{name: "Get invalid selector", result: ognl.Get(map[string]int{"present": 1}, `missing\`)},
+		{name: "GetE invalid selector", result: invalidSelectorE},
+		{name: "Get missing field", result: ognl.Get(resultContractUser{Name: "alice"}, "Missing")},
+		{name: "GetE missing field", result: missingE},
+		{name: "Get index out of range", result: ognl.Get([]int{1}, "2")},
+		{name: "GetE index out of range", result: outOfRangeE},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, ognl.Invalid, tt.result.Type())
+			assert.False(t, tt.result.Effective())
+			assert.Nil(t, tt.result.Value())
+			assert.Nil(t, tt.result.Values())
+
+			values, err := tt.result.ValuesE()
+			require.NoError(t, err)
+			assert.Nil(t, values)
+		})
+	}
+}
+
+func TestResultContract_InvalidValuesPreserveTypedNil(t *testing.T) {
+	var pointer *resultContractUser
+	result := ognl.Parse(pointer)
+
+	assert.Equal(t, ognl.Interface, result.Type())
+	assert.True(t, result.Effective())
+	require.Len(t, result.Values(), 1)
+	assert.Nil(t, result.Values()[0])
+
+	values, err := result.ValuesE()
+	require.NoError(t, err)
+	require.Len(t, values, 1)
+	assert.Nil(t, values[0])
+}
