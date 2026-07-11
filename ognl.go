@@ -15,7 +15,9 @@
 //     compatibility spellings "-0", "-00", and so on for index zero.
 //   - "#" expands the current value into a list: subsequent segments are then
 //     applied to every element (similar to flat-map). "##" expands twice.
-//     Expansion work and result count are bounded per Get/GetE call.
+//     Expansion work and result count are bounded per Get/GetE call. Once the
+//     selector alone contains more expansion operators than the operation
+//     allowance, ErrExpansionLimit takes precedence without scanning its suffix.
 //   - "\\" is a general escape introducer. For example, "\\.", "\\#", and
 //     "\\\\" address a literal dot, hash, and backslash. A final unmatched
 //     backslash is invalid and is reported as ErrInvalidSelector.
@@ -313,7 +315,7 @@ func (r Result) Get(path string) Result {
 	tokens, err := parseSelector(path)
 	if err != nil {
 		diagnosis := append([]error(nil), r.diagnosis...)
-		diagnosis = append(diagnosis, wrapResolutionError(err, reflect.TypeOf(r.raw), state.selectorError(path)))
+		diagnosis = append(diagnosis, wrapResolutionError(err, reflect.TypeOf(r.raw), state.parseErrorLocation(err, path)))
 		return Result{typ: Invalid, diagnosis: diagnosis}
 	}
 	return r.get(tokens, path, &expansionBudget{}, state)
@@ -373,7 +375,7 @@ func (r Result) GetE(path string) (Result, error) {
 	state := newResolutionState(path)
 	tokens, err := parseSelector(path)
 	if err != nil {
-		return Result{typ: Invalid, diagnosis: append([]error(nil), r.diagnosis...)}, wrapResolutionError(err, reflect.TypeOf(r.raw), state.selectorError(path))
+		return Result{typ: Invalid, diagnosis: append([]error(nil), r.diagnosis...)}, wrapResolutionError(err, reflect.TypeOf(r.raw), state.parseErrorLocation(err, path))
 	}
 	return r.getE(tokens, path, &expansionBudget{}, state)
 }
@@ -448,7 +450,7 @@ func GetE(value interface{}, path string) (Result, error) {
 	state := newResolutionState(path)
 	tokens, err := parseSelector(path)
 	if err != nil {
-		return Result{typ: Invalid}, wrapResolutionError(err, reflect.TypeOf(value), state.selectorError(path))
+		return Result{typ: Invalid}, wrapResolutionError(err, reflect.TypeOf(value), state.parseErrorLocation(err, path))
 	}
 	return getE(value, tokens, path, 0, &expansionBudget{}, state)
 }
@@ -671,7 +673,7 @@ func Get(value interface{}, path string) Result {
 	state := newResolutionState(path)
 	tokens, err := parseSelector(path)
 	if err != nil {
-		return Result{typ: Invalid, diagnosis: []error{wrapResolutionError(err, reflect.TypeOf(value), state.selectorError(path))}}
+		return Result{typ: Invalid, diagnosis: []error{wrapResolutionError(err, reflect.TypeOf(value), state.parseErrorLocation(err, path))}}
 	}
 	return get(value, tokens, path, 0, &expansionBudget{}, state)
 }
@@ -867,14 +869,29 @@ type selectorToken struct {
 	operation     uint64
 }
 
+type selectorExpansionLimitError struct {
+	offset    uint64
+	operation uint64
+}
+
+func (e *selectorExpansionLimitError) Error() string {
+	return fmt.Sprintf("selector expansion tokens exceed %d: %s", maxExpansionOperations, ErrExpansionLimit)
+}
+
+func (e *selectorExpansionLimitError) Unwrap() error {
+	return ErrExpansionLimit
+}
+
 // parseSelector validates selector syntax and decodes it once into the private
-// token form shared by every traversal entry point.
+// token form shared by every traversal entry point. It stops once expansion
+// tokens alone prove that traversal must exceed its operation allowance.
 func parseSelector(selector string) ([]selectorToken, error) {
 	tokens := make([]selectorToken, 0, 8)
 	segment := make([]byte, 0)
 	started := false
 	segmentOffset := 0
 	var operation uint64
+	expansionTokens := 0
 	flushSegment := func() {
 		if !started {
 			return
@@ -914,11 +931,15 @@ func parseSelector(selector string) ([]selectorToken, error) {
 			index++
 		case '#':
 			flushSegment()
+			if expansionTokens >= maxExpansionOperations {
+				return nil, &selectorExpansionLimitError{offset: uint64(index), operation: operation}
+			}
 			tokens = append(tokens, selectorToken{
 				kind:      selectorExpansionToken,
 				offset:    uint64(index),
 				operation: operation,
 			})
+			expansionTokens++
 			operation++
 			index++
 		default:
@@ -1434,6 +1455,18 @@ func (s resolutionState) selectorError(path string) resolutionLocation {
 		offset = uint64(len(path) - 1)
 	}
 	return resolutionLocation{offset: offset, totalLen: s.totalLen}
+}
+
+func (s resolutionState) parseErrorLocation(err error, path string) resolutionLocation {
+	var expansionLimit *selectorExpansionLimitError
+	if errors.As(err, &expansionLimit) {
+		return resolutionLocation{
+			offset:    expansionLimit.offset,
+			operation: expansionLimit.operation,
+			totalLen:  s.totalLen,
+		}
+	}
+	return s.selectorError(path)
 }
 
 type resolutionError struct {

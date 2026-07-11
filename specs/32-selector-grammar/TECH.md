@@ -18,7 +18,7 @@ At that baseline, the two public walkers duplicated grammar decisions. Changing 
 ## Implemented design
 
 1. The exported sentinel required by B08-B11 lives alongside the existing stable errors.
-2. A private single-pass scanner replaces `parseNextKey` for B01 and B05-B08 while preserving B12-B14. Its private tokens retain segment, dot-separator, and expansion boundaries needed by the existing traversal semantics.
+2. A private single-pass scanner replaces `parseNextKey` for B01 and B05-B08 while preserving B12-B14. Its private tokens retain segment, dot-separator, and expansion boundaries needed by the existing traversal semantics. The scanner separately counts expansion tokens and stops before allocating the first token that alone would exceed the fixed expansion-operation allowance; general operation numbering remains independent for error locations.
 3. Each `Get`, `GetE`, `Result.Get`, and `Result.GetE` call parses and validates once, then reuses the tokens during traversal and expansion for B09-B11 and B15.
 4. Both traversal variants use one shared, container-aware segment resolver for B02-B04 and B15. Its container-type walk stops at nil pointers and is bounded by `maxResolveDepth`, including legal recursive named-pointer types.
 5. All four entry points centralize selector-validation failure construction for B08-B11, distinct from resolution failures under B15.
@@ -54,6 +54,7 @@ Supporting gates are deliberately outside the 1:1 Behavior mapping:
 - `BenchmarkSelectorGrammar` records non-gating baseline time and allocation data at 1 KiB, 16 KiB, and 256 KiB. It has no pass/fail threshold and is not used to claim complexity; static review verifies that the scanner is a single pass with no recursion or global mutable parser state, while expanded-list traversal retains the existing `maxResolveDepth` bound.
 - Preserve the existing million-segment regression and run race-enabled tests to cover long-input and concurrent-call safety without creating another Product Behavior.
 - `TestSelectorNamedPointerCycleCompletes` uses isolated child processes to prove completion across all six lookup entry paths without leaking a stuck goroutine; internal and compatibility regressions separately lock nil-pointer termination and ordinary/named-pointer dispatch.
+- `TestIssue56ParseSelectorStopsAtExpansionTokenLimit`, `TestIssue56ParseSelectorExpansionTokenBoundary`, and `TestIssue56PublicAPIsFailClosedAtParserExpansionLimit` lock the resource-ceiling exception in B09-B10, the exact expansion-token boundary, independent segment/expansion accounting, and all four public entry points.
 
 ### Verification evidence
 

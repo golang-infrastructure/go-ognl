@@ -99,7 +99,7 @@ maintainer
 - `Get` 不返回 error：无法解析时 `Result.Effective()` 返回 `false`，过程中的非致命错误记录在 `Result.Diagnosis()` 中。非法选择器会返回 `Type()==Invalid`、无部分结果，并在 Diagnosis 中包装 `ErrInvalidSelector`。
 - `GetE` 返回致命错误。对已展开的结果，单个分支错误进入 `Diagnosis()`；只要至少一个分支匹配，调用仍可成功。所有分支都失败时不返回部分值，并返回输入顺序中的第一个失败上下文。非法选择器会在遍历前失败，并返回可由 `errors.Is(err, ognl.ErrInvalidSelector)` 识别的错误和无部分值的 Invalid Result。
 - 普通 `.` 下钻使用迭代处理；匿名字段、pointer/interface 展开和 `#.` 等递归分支有深度上限。限制的是递归深度，不是 path 字符串长度。
-- 每次 `Get`/`GetE`（包括 `Result` 上的同名方法）的 `#` 展开最多执行 100,000 次操作，并在整个返回结果树中累计保留 10,000 个结果。超限时 `Get` 返回无效结果并在 `Diagnosis()` 中记录 `ErrExpansionLimit`；`GetE` 返回可由 `errors.Is` 识别的 `ErrExpansionLimit`，且不暴露部分结果。
+- 每次 `Get`/`GetE`（包括 `Result` 上的同名方法）的 `#` 展开最多执行 100,000 次操作，并在整个返回结果树中累计保留 10,000 个结果。只要 selector 前缀中的 `#` 数量已经独自超过操作上限，就会立即返回 `ErrExpansionLimit`，不再扫描后续字节；因此该资源错误优先于超限点之后的非法 selector 尾部。超限时 `Get` 返回无效结果并在 `Diagnosis()` 中记录 `ErrExpansionLimit`；`GetE` 返回可由 `errors.Is` 识别的 `ErrExpansionLimit`，且不暴露部分结果。
 - 对外错误和诊断保留 sentinel unwrap 链，可用 `errors.Is` 检查。错误文本只包含安全编码的实际失败动态类型和数字位置字段 `offset`、`op`、`total_len`，不包含 selector、解码后的 key 或任何对象值；完整文本最多 352 bytes。
 
 ## Result 兼容性契约
