@@ -75,7 +75,7 @@ maintainer
 [alice bob]
 ```
 
-仓库中的可编译外部包示例 `Example` 覆盖相同的 API 调用顺序和输出；README 片段额外包含可直接运行的 `package main` 包装。
+`TestREADMEExample` 会直接从 README 提取上述 Go 程序和输出，编译运行程序并核对实际输出，避免文档示例与测试漂移。
 
 ## 关键词说明
 
