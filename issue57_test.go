@@ -2,6 +2,7 @@ package ognl_test
 
 import (
 	"testing"
+	"time"
 
 	ognl "github.com/golang-infrastructure/go-ognl"
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,14 @@ import (
 type Issue57Node struct {
 	*Issue57Node
 	ID int
+}
+
+type Issue57NamedPointerCycle *Issue57NamedPointerCycle
+
+type Issue57AnonymousValue interface{}
+
+type issue57AnonymousInterfaceHolder struct {
+	Issue57AnonymousValue
 }
 
 func assertIssue57DirectAnonymousField(t *testing.T, value, want *Issue57Node) {
@@ -57,4 +66,34 @@ func TestIssue57RecursiveAnonymousNamePreservesTypedNil(t *testing.T) {
 	require.Equal(t, ognl.Pointer, resultE.Type())
 	assert.True(t, resultE.Effective())
 	assert.Nil(t, resultE.Value())
+}
+
+func TestIssue57AnonymousInterfaceNamedPointerCycleReturns(t *testing.T) {
+	var pointer Issue57NamedPointerCycle
+	value := issue57AnonymousInterfaceHolder{Issue57AnonymousValue: pointer}
+	type outcome struct {
+		result  ognl.Result
+		resultE ognl.Result
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result := ognl.Get(value, "Issue57AnonymousValue")
+		resultE, err := ognl.GetE(value, "Issue57AnonymousValue")
+		done <- outcome{result: result, resultE: resultE, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		for _, result := range []ognl.Result{got.result, got.resultE} {
+			require.Equal(t, ognl.Interface, result.Type())
+			assert.True(t, result.Effective())
+			actual, ok := result.Value().(Issue57NamedPointerCycle)
+			require.True(t, ok)
+			assert.Nil(t, actual)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("anonymous interface lookup did not return for a named pointer type cycle")
+	}
 }

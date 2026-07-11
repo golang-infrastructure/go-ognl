@@ -1198,7 +1198,12 @@ func parseString(t reflect.Type, v reflect.Value, value string, depth int) (inte
 
 		if rt.Anonymous {
 			embeddedType := reflect.TypeOf(res)
+			seenTypes := make(map[reflect.Type]struct{})
 			for embeddedType != nil && embeddedType.Kind() == reflect.Ptr {
+				if _, seen := seenTypes[embeddedType]; seen {
+					break
+				}
+				seenTypes[embeddedType] = struct{}{}
 				embeddedType = embeddedType.Elem()
 			}
 			if embeddedType == t {
