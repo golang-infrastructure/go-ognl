@@ -260,3 +260,103 @@ func TestIssue28_ResultGetEFlatMap(t *testing.T) {
 		require.Equal(t, want, chained.Values())
 	})
 }
+
+func TestIssue50_SeparatorExpansionKeepsFlatMap(t *testing.T) {
+	t.Run("nested slices", func(t *testing.T) {
+		value := [][]int{{1, 2}, {3}}
+		want := []interface{}{1, 2, 3}
+
+		adjacent := Get(value, "##")
+		separated := Get(value, "#.#")
+		require.Equal(t, want, adjacent.Values())
+		require.Equal(t, adjacent.Values(), separated.Values())
+
+		adjacentE, err := GetE(value, "##")
+		require.NoError(t, err)
+		separatedE, err := GetE(value, "#.#")
+		require.NoError(t, err)
+		require.Equal(t, want, adjacentE.Values())
+		require.Equal(t, adjacentE.Values(), separatedE.Values())
+	})
+
+	t.Run("resolved children include an empty child", func(t *testing.T) {
+		value := []map[string][]int{
+			{"values": {1, 2}},
+			{"values": {}},
+			{"values": {3}},
+		}
+		want := []interface{}{1, 2, 3}
+
+		adjacent := Get(value, "#values#")
+		separated := Get(value, "#.values#")
+		require.Equal(t, want, adjacent.Values())
+		require.Equal(t, adjacent.Values(), separated.Values())
+		assert.Equal(t, adjacent.Effective(), separated.Effective())
+		assert.Equal(t, adjacent.Diagnosis(), separated.Diagnosis())
+
+		adjacentE, err := GetE(value, "#values#")
+		require.NoError(t, err)
+		separatedE, err := GetE(value, "#.values#")
+		require.NoError(t, err)
+		require.Equal(t, want, adjacentE.Values())
+		require.Equal(t, adjacentE.Values(), separatedE.Values())
+		assert.Equal(t, adjacentE.Effective(), separatedE.Effective())
+		assert.Equal(t, adjacentE.Diagnosis(), separatedE.Diagnosis())
+	})
+}
+
+func TestIssue50_SeparatorExpansionSkipsAllEmptyChildren(t *testing.T) {
+	value := []map[string][]int{
+		{"values": {}},
+		{"values": {}},
+	}
+
+	adjacent := Get(value, "#values#")
+	separated := Get(value, "#.values#")
+	assert.Equal(t, adjacent.Values(), separated.Values())
+	assert.Equal(t, adjacent.Effective(), separated.Effective())
+	assert.Equal(t, adjacent.Diagnosis(), separated.Diagnosis())
+	assert.Empty(t, separated.Values())
+	assert.False(t, separated.Effective())
+
+	adjacentE, adjacentErr := GetE(value, "#values#")
+	require.Error(t, adjacentErr)
+	assert.ErrorIs(t, adjacentErr, ErrInvalidValue)
+	separatedE, separatedErr := GetE(value, "#.values#")
+	require.Error(t, separatedErr)
+	assert.ErrorIs(t, separatedErr, ErrInvalidValue)
+	assert.Equal(t, adjacentE.Values(), separatedE.Values())
+	assert.Equal(t, adjacentE.Effective(), separatedE.Effective())
+	assert.Equal(t, adjacentE.Diagnosis(), separatedE.Diagnosis())
+}
+
+func TestIssue50_SeparatorExpansionResultBudgetBoundary(t *testing.T) {
+	const resultLimit = 10_000
+
+	t.Run("exact boundary does not count deployed wrappers", func(t *testing.T) {
+		input := issue28ChainedBudgetInput(resultLimit)
+
+		result := Get(input, "#.#")
+		require.True(t, result.Effective())
+		require.Len(t, result.Values(), resultLimit)
+		assertNoExpansionLimitDiagnosis(t, result)
+
+		resultE, err := GetE(input, "#.#")
+		require.NoError(t, err)
+		require.True(t, resultE.Effective())
+		require.Len(t, resultE.Values(), resultLimit)
+		assertNoExpansionLimitDiagnosis(t, resultE)
+	})
+
+	t.Run("aggregate over limit fails closed", func(t *testing.T) {
+		input := issue28ChainedBudgetInput(resultLimit + 1)
+
+		requireExpansionLimitDiagnosis(t, Get(input, "#.#"))
+
+		resultE, err := GetE(input, "#.#")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrExpansionLimit)
+		assert.False(t, resultE.Effective())
+		assert.Empty(t, resultE.Values())
+	})
+}

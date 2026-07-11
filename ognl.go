@@ -502,11 +502,16 @@ func getE(value interface{}, tokens []selectorToken, path string, depth int, bud
 						result.diagnosis = append(result.diagnosis, next.diagnosis...)
 					}
 					if next.typ != Invalid {
-						if err := budget.retainResults(1); err != nil {
-							return invalidExpansionResult(result), wrapResolutionError(err, reflect.TypeOf(item), location)
+						if next.deployment {
+							out = append(out, next.raw.([]interface{})...)
+							result.retainedResults += next.retainedResults
+						} else {
+							if err := budget.retainResults(1); err != nil {
+								return invalidExpansionResult(result), wrapResolutionError(err, reflect.TypeOf(item), location)
+							}
+							out = append(out, next.raw)
+							result.retainedResults += next.retainedResults + 1
 						}
-						out = append(out, next.raw)
-						result.retainedResults += next.retainedResults + 1
 					} else if err := budget.releaseResults(next.retainedResults); err != nil {
 						return invalidExpansionResult(result), wrapResolutionError(err, reflect.TypeOf(item), location)
 					}
@@ -717,11 +722,16 @@ func get(value interface{}, tokens []selectorToken, path string, depth int, budg
 						return expansionLimitResult(result, wrapResolutionError(budget.err, reflect.TypeOf(item), location))
 					}
 					if next.typ != Invalid {
-						if err := budget.retainResults(1); err != nil {
-							return expansionLimitResult(result, wrapResolutionError(err, reflect.TypeOf(item), location))
+						if next.deployment {
+							out = append(out, next.raw.([]interface{})...)
+							result.retainedResults += next.retainedResults
+						} else {
+							if err := budget.retainResults(1); err != nil {
+								return expansionLimitResult(result, wrapResolutionError(err, reflect.TypeOf(item), location))
+							}
+							out = append(out, next.raw)
+							result.retainedResults += next.retainedResults + 1
 						}
-						out = append(out, next.raw)
-						result.retainedResults += next.retainedResults + 1
 					} else if err := budget.releaseResults(next.retainedResults); err != nil {
 						return expansionLimitResult(result, wrapResolutionError(err, reflect.TypeOf(item), location))
 					}
