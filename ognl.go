@@ -316,7 +316,7 @@ func (r Result) Get(path string) Result {
 		diagnosis = append(diagnosis, wrapResolutionError(err, reflect.TypeOf(r.raw), state.selectorError(path)))
 		return Result{typ: Invalid, diagnosis: diagnosis}
 	}
-	if onlySelectorSeparators(tokens) {
+	if raw, ok := r.raw.([]interface{}); r.deployment && ok && len(raw) == 0 && onlySelectorSeparators(tokens) {
 		return r
 	}
 	return r.get(tokens, path, &expansionBudget{}, state)
@@ -378,7 +378,7 @@ func (r Result) GetE(path string) (Result, error) {
 	if err != nil {
 		return Result{typ: Invalid, diagnosis: append([]error(nil), r.diagnosis...)}, wrapResolutionError(err, reflect.TypeOf(r.raw), state.selectorError(path))
 	}
-	if onlySelectorSeparators(tokens) {
+	if raw, ok := r.raw.([]interface{}); r.deployment && ok && len(raw) == 0 && onlySelectorSeparators(tokens) {
 		return r, nil
 	}
 	return r.getE(tokens, path, &expansionBudget{}, state)

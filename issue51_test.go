@@ -94,6 +94,26 @@ func TestIssue51ResultNoOpPreservesEmptyExpansionState(t *testing.T) {
 	}
 }
 
+func TestIssue51OrdinaryResultNoOpKeepsC1Type(t *testing.T) {
+	resolved := ognl.Get(resultContractUser{Name: "alice"}, "Name")
+	require.Equal(t, ognl.String, resolved.Type())
+
+	for _, selector := range []string{"", ".", "..."} {
+		t.Run(selector, func(t *testing.T) {
+			got := resolved.Get(selector)
+			assert.Equal(t, ognl.Interface, got.Type())
+			assert.True(t, got.Effective())
+			assert.Equal(t, "alice", got.Value())
+
+			gotE, err := resolved.GetE(selector)
+			require.NoError(t, err)
+			assert.Equal(t, ognl.Interface, gotE.Type())
+			assert.True(t, gotE.Effective())
+			assert.Equal(t, "alice", gotE.Value())
+		})
+	}
+}
+
 func TestIssue51RealOperationAfterEmptyExpansionStillFails(t *testing.T) {
 	empty := []struct{ Name string }{}
 	for _, selector := range []string{"#.Name", "#..Name", "##"} {
