@@ -249,11 +249,14 @@ func (r Result) Value() interface{} {
 
 // Values returns the value as a slice: an expanded Result's elements directly,
 // an expandable single value (slice/array/map/struct) expanded, or otherwise a
-// one-element slice holding the value. Each call returns a fresh shallow slice;
-// element objects are not deep-copied. Per contract C4, expansion errors are
-// ignored, so a scalar is returned as one element; use ValuesE to observe the
-// error.
+// one-element slice holding the value. An Invalid Result returns nil. Each call
+// returns a fresh shallow slice; element objects are not deep-copied. Per
+// contract C4, expansion errors are ignored, so a scalar is returned as one
+// element; use ValuesE to observe the error.
 func (r Result) Values() []interface{} {
+	if r.Type() == Invalid {
+		return nil
+	}
 
 	if r.deployment {
 		if r.raw == nil {
@@ -270,9 +273,13 @@ func (r Result) Values() []interface{} {
 }
 
 // ValuesE is the error-returning form of Values (contract C4): it returns a
-// fresh shallow slice on every successful call. When a scalar cannot be
-// expanded, it returns nil values and an error wrapping ErrUnableExpand.
+// fresh shallow slice on every successful call. An Invalid Result returns nil
+// values and no error. When a scalar cannot be expanded, it returns nil values
+// and an error wrapping ErrUnableExpand.
 func (r Result) ValuesE() ([]interface{}, error) {
+	if r.Type() == Invalid {
+		return nil, nil
+	}
 
 	if r.deployment {
 		if r.raw == nil {
